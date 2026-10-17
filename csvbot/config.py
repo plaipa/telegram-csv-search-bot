@@ -22,6 +22,9 @@ ADMIN_IDS = _ids("ADMIN_IDS")
 ALLOWED_IDS = _ids("ALLOWED_USER_IDS")
 DATA_DIR = _path("DATA_DIR", "data")
 DB_PATH = _path("DB_PATH", "index.db")
+# Bot API server; change it to use a mirror/reverse proxy of api.telegram.org
+# or a self-hosted telegram-bot-api server.
+API_URL = (os.getenv("TELEGRAM_API_URL", "").strip() or "https://api.telegram.org").rstrip("/")
 SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "60"))
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "5"))
 

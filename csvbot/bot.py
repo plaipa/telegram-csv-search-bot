@@ -204,7 +204,9 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def build_app() -> Application:
     if not config.BOT_TOKEN:
         raise SystemExit("BOT_TOKEN is not set in .env (run: python -m csvbot.check)")
-    builder = Application.builder().token(config.BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown)
+    builder = (Application.builder().token(config.BOT_TOKEN)
+               .base_url(f"{config.API_URL}/bot").base_file_url(f"{config.API_URL}/file/bot")
+               .post_init(post_init).post_shutdown(post_shutdown))
     if config.proxy():
         builder = builder.proxy(config.proxy()).get_updates_proxy(config.proxy())
     app = builder.build()

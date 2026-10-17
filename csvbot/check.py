@@ -118,7 +118,7 @@ def get_me(proxy_url: str | None):
 
     from . import config
     try:
-        r = httpx.get(f"https://api.telegram.org/bot{config.BOT_TOKEN}/getMe",
+        r = httpx.get(f"{config.API_URL}/bot{config.BOT_TOKEN}/getMe",
                       proxy=proxy_url or None, timeout=15, trust_env=False)
     except Exception:
         return False, None
@@ -173,7 +173,8 @@ def check_telegram():
         return
     reachable, username = get_me(proxy)
     if reachable:
-        report(OK, "اتصال به تلگرام برقرار شد" + (f" (از طریق {proxy})" if proxy else ""))
+        via = [x for x in (proxy, config.API_URL if config.API_URL != "https://api.telegram.org" else "") if x]
+        report(OK, "اتصال به تلگرام برقرار شد" + (f" (از طریق {' و '.join(via)})" if via else ""))
     else:
         print(f"{WARN} با تنظیمات فعلی به تلگرام وصل نشد")
         reachable, username = find_proxy()

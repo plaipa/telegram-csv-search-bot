@@ -47,6 +47,7 @@ nano .env
 | `BOT_TOKEN` | [@BotFather](https://t.me/BotFather) |
 | `ADMIN_IDS` | شناسه‌ی عددی خودتان از [@userinfobot](https://t.me/userinfobot) |
 | `PROXY` | فقط اگر تلگرام فیلتر است (بخش بعد). `python -m csvbot.check` خودکار پیدا می‌کند |
+| `TELEGRAM_API_URL` | فقط اگر می‌خواهید به‌جای api.telegram.org از آدرس جایگزین استفاده کنید (README را ببینید) |
 
 ### اگر تلگرام فیلتر است (`PROXY`)
 VPN را روشن کنید.
