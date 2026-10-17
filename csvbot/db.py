@@ -53,6 +53,9 @@ CREATE TABLE IF NOT EXISTS files (
     done INTEGER NOT NULL DEFAULT 0,
     added_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS purged (
+    file_id INTEGER, row_id INTEGER, PRIMARY KEY (file_id, row_id)
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS rows (id INTEGER PRIMARY KEY, data TEXT NOT NULL);
 CREATE VIRTUAL TABLE IF NOT EXISTS rows_fts USING fts5(
     body, content='', contentless_delete=1,
@@ -171,7 +174,34 @@ class Database:
                 con.execute("DELETE FROM rows_fts WHERE rowid BETWEEN ? AND ?", (first, last))
                 con.execute("DELETE FROM rows WHERE id BETWEEN ? AND ?", (first, last))
             con.execute("DELETE FROM files WHERE id = ?", (file_id,))
+            con.execute("DELETE FROM purged WHERE file_id = ?", (file_id,))
             return True
+
+    def locate(self, row_id: int):
+        """Where an indexed row lives in its source file: (file_id, unique_id,
+        position, stored_data). position counts the non-blank data rows of the
+        source, excluding rows already removed from it (see mark_purged)."""
+        with closing(self._connect()) as con:
+            found = con.execute(
+                "SELECT f.id, f.unique_id, r.id - f.first_id + 1, r.data FROM rows r"
+                " JOIN files f ON r.id BETWEEN f.first_id AND f.last_id"
+                " WHERE r.id = ? AND f.done = 1", (row_id,)).fetchone()
+            if not found:
+                return None
+            file_id, uid, pos, data = found
+            gone = con.execute("SELECT count(*) FROM purged WHERE file_id = ? AND row_id < ?",
+                               (file_id, row_id)).fetchone()[0]
+        return file_id, uid, pos - gone, data
+
+    def mark_purged(self, file_id: int, row_id: int, old_prefix: str, new_prefix: str):
+        """Record that a row was removed from its source file, and re-key the
+        file(s) of that source so the changed size doesn't trigger a re-index."""
+        with closing(self._connect()) as con, con:
+            con.execute("INSERT OR IGNORE INTO purged VALUES (?, ?)", (file_id, row_id))
+            con.execute(
+                "UPDATE files SET unique_id = ? || substr(unique_id, ?)"
+                " WHERE unique_id = ? OR substr(unique_id, 1, ?) = ? || '|'",
+                (new_prefix, len(old_prefix) + 1, old_prefix, len(old_prefix) + 1, old_prefix))
 
     def optimize(self):
         with closing(self._connect()) as con, con:

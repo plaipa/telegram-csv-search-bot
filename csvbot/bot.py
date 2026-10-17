@@ -17,6 +17,7 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
 
 from . import config
 from .db import Database
+from .purge import PurgeError, delete_source_row
 from .sources import CSV_EXT, DB_EXT, FolderIndex
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -155,12 +156,24 @@ async def on_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     offset = context.user_data.get("offset", 0)
     if action == "del":
         await cq.answer()
-        markup = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ بله، حذف شود", callback_data=f"delok:{row_id}"),
-            InlineKeyboardButton("❌ انصراف", callback_data="delno:0")]])
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ حذف از ایندکس (فایل اصلی می‌ماند)", callback_data=f"delok:{row_id}")],
+            [InlineKeyboardButton("⚠️ حذف از ایندکس و از فایل اصلی (برگشت‌ناپذیر)", callback_data=f"delsrc:{row_id}")],
+            [InlineKeyboardButton("❌ انصراف", callback_data="delno:0")]])
         await cq.edit_message_reply_markup(markup)
         return
-    if action == "delok":
+    if action == "delsrc":
+        await cq.answer("⏳ در حال حذف از فایل اصلی...")
+        try:
+            async with scan_lock:  # no folder scan while the file is rewritten
+                name = await asyncio.to_thread(delete_source_row, db, config.DATA_DIR, int(row_id))
+            log.info("Admin %s deleted row %s from source file %s", cq.from_user.id, row_id, name)
+        except PurgeError as e:
+            await cq.message.reply_text(f"❌ {e}")
+        except Exception:
+            log.exception("Deleting row %s from source failed", row_id)
+            await cq.message.reply_text("❌ حذف از فایل اصلی انجام نشد (جزئیات در لاگ).")
+    elif action == "delok":
         ok = await asyncio.to_thread(db.delete_row, int(row_id))
         log.info("Admin %s deleted row %s (%s)", cq.from_user.id, row_id, "ok" if ok else "missing")
         await cq.answer("🗑 حذف شد." if ok else "این ردیف قبلاً حذف شده بود.")
@@ -258,7 +271,7 @@ def build_app() -> Application:
     app.add_handler(MessageHandler(private & filters.Document.ALL, on_document))
     app.add_handler(MessageHandler(private & filters.TEXT & ~filters.COMMAND, on_search))
     app.add_handler(CallbackQueryHandler(on_page, pattern=r"^page:\d+$"))
-    app.add_handler(CallbackQueryHandler(on_delete, pattern=r"^(del|delok|delno):\d+$"))
+    app.add_handler(CallbackQueryHandler(on_delete, pattern=r"^(del|delok|delsrc|delno):\d+$"))
     return app
 
 

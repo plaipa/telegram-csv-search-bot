@@ -26,16 +26,20 @@ def detect_dialect(text: str):
         return csv.excel
 
 
-def read_csv(path: str) -> tuple[list[str], Iterator[list[str]]]:
-    """Return (headers, row iterator). Blank rows are skipped; short rows are
-    kept as-is and long rows get extra "ستون N" headers only if seen first."""
+def csv_format(path: str):
+    """Return (encoding, dialect) detected from the start of the file."""
     with open(path, "rb") as f:
         sample = f.read(SAMPLE_SIZE)
     encoding = detect_encoding(sample)
     text_sample = sample.decode(encoding, errors="ignore")
     # Sniff on whole lines only
-    dialect = detect_dialect(text_sample[: text_sample.rfind("\n") + 1] or text_sample)
+    return encoding, detect_dialect(text_sample[: text_sample.rfind("\n") + 1] or text_sample)
 
+
+def read_csv(path: str) -> tuple[list[str], Iterator[list[str]]]:
+    """Return (headers, row iterator). Blank rows are skipped; short rows are
+    kept as-is and long rows get extra "ستون N" headers only if seen first."""
+    encoding, dialect = csv_format(path)
     f = open(path, encoding=encoding, errors="replace", newline="")
     reader = csv.reader(f, dialect)
     headers: list[str] = []
