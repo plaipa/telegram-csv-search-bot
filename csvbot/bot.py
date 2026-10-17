@@ -19,7 +19,7 @@ log = logging.getLogger("csvbot")
 
 MAX_VALUE_LEN = 300
 db = Database(config.DB_PATH)
-bot = TelegramClient("bot", config.API_ID, config.API_HASH)
+bot = TelegramClient("bot", config.API_ID, config.API_HASH, proxy=config.proxy())
 last_query: dict[int, str] = {}
 
 

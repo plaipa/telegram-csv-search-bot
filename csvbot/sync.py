@@ -22,7 +22,8 @@ async def main():
         raise SystemExit("Set CHANNEL in .env")
     db = Database(config.DB_PATH)
     # First run asks for your phone number and login code.
-    async with TelegramClient("user", config.API_ID, config.API_HASH) as client:
+    async with TelegramClient("user", config.API_ID, config.API_HASH,
+                              proxy=config.proxy()) as client:
         async for message in client.iter_messages(config.channel_ref(), reverse=True):
             if message.document and is_csv(message.document):
                 async def report(text):
