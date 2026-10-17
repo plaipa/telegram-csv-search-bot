@@ -188,8 +188,20 @@ class Database:
         # Prefix-matching very short words expands to huge term lists; match them exactly.
         return " ".join(f'"{w}"*' if len(w) >= 3 else f'"{w}"' for w in words) if words else None
 
-    def search(self, query: str, limit: int = 5, offset: int = 0):
+    def delete_row(self, row_id: int) -> bool:
+        """Remove one row from the index (the source file is left untouched)."""
+        with closing(self._connect()) as con, con:
+            cur = con.execute("DELETE FROM rows WHERE id = ?", (row_id,))
+            if not cur.rowcount:
+                return False
+            con.execute("DELETE FROM rows_fts WHERE rowid = ?", (row_id,))
+            con.execute("UPDATE files SET row_count = row_count - 1"
+                        " WHERE ? BETWEEN first_id AND last_id", (row_id,))
+            return True
+
+    def search(self, query: str, limit: int = 5, offset: int = 0, with_ids: bool = False):
         """Return (total, [(file_name, row_num, {header: value}), ...]).
+        With with_ids each tuple gets the row id appended (for delete_row).
         total is capped at COUNT_CAP + 1 to stay fast on huge indexes."""
         match = self.build_query(query)
         if not match:
@@ -200,7 +212,7 @@ class Database:
                 (match, COUNT_CAP + 1),
             ).fetchone()[0]
             found = con.execute(
-                "SELECT f.name, f.headers, r.id - f.first_id + 1, r.data"
+                "SELECT f.name, f.headers, r.id - f.first_id + 1, r.data, r.id"
                 " FROM (SELECT rowid FROM rows_fts WHERE rows_fts MATCH ?"
                 "       ORDER BY rowid LIMIT ? OFFSET ?) m"
                 " JOIN rows r ON r.id = m.rowid"
@@ -208,7 +220,7 @@ class Database:
                 (match, limit, offset),
             ).fetchall()
         results = []
-        for name, headers, row_num, data in found:
+        for name, headers, row_num, data, row_id in found:
             fields = {h: v for h, v in zip(headers.split(SEP), data.split(SEP)) if v}
-            results.append((name, row_num, fields))
+            results.append((name, row_num, fields, row_id) if with_ids else (name, row_num, fields))
         return total, results

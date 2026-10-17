@@ -79,6 +79,7 @@ async def post_shutdown(app: Application):
 
 
 def format_results(query: str, total: int, results, offset: int) -> str:
+    results = [r[:3] for r in results]
     q = html.escape(query)
     if not total:
         return f"🔍 نتیجه‌ای برای «{q}» پیدا نشد."
@@ -95,18 +96,25 @@ def format_results(query: str, total: int, results, offset: int) -> str:
     return text if len(text) <= 4000 else text[:3990] + "…"
 
 
-def pager(total: int, offset: int) -> InlineKeyboardMarkup | None:
+def pager(total: int, offset: int, results=(), admin: bool = False) -> InlineKeyboardMarkup | None:
     size, buttons = config.PAGE_SIZE, []
+    rows = []
+    if admin and results:
+        rows.append([InlineKeyboardButton(f"🗑 {i}", callback_data=f"del:{r[3]}")
+                     for i, r in enumerate(results, offset + 1)])
     if offset > 0:
         buttons.append(InlineKeyboardButton("« قبلی", callback_data=f"page:{max(offset - size, 0)}"))
     if offset + size < total:
         buttons.append(InlineKeyboardButton("بعدی »", callback_data=f"page:{offset + size}"))
-    return InlineKeyboardMarkup([buttons]) if buttons else None
+    if buttons:
+        rows.append(buttons)
+    return InlineKeyboardMarkup(rows) if rows else None
 
 
-async def run_search(query: str, offset: int):
-    total, results = await asyncio.to_thread(db.search, query, config.PAGE_SIZE, offset)
-    return format_results(query, total, results, offset), pager(total, offset)
+async def run_search(query: str, offset: int, admin: bool = False):
+    total, results = await asyncio.to_thread(
+        db.search, query, config.PAGE_SIZE, offset, admin)
+    return format_results(query, total, results, offset), pager(total, offset, results, admin)
 
 
 async def on_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -119,7 +127,8 @@ async def on_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("عبارت مورد نظر را بنویسید. مثال: علی رضایی")
         return
     context.user_data["query"] = query
-    text, markup = await run_search(query, 0)
+    context.user_data["offset"] = 0
+    text, markup = await run_search(query, 0, is_admin(update.effective_user.id))
     await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 
@@ -130,7 +139,37 @@ async def on_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await cq.answer("جستجو منقضی شده، دوباره جستجو کنید.")
         return
     await cq.answer()
-    text, markup = await run_search(query, int(cq.data.split(":")[1]))
+    offset = context.user_data["offset"] = int(cq.data.split(":")[1])
+    text, markup = await run_search(query, offset, is_admin(cq.from_user.id))
+    await cq.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+
+async def on_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin-only: remove one result row from the index (asks to confirm first)."""
+    cq = update.callback_query
+    if not is_admin(cq.from_user.id):
+        await cq.answer("⛔️ فقط ادمین می‌تواند حذف کند.", show_alert=True)
+        return
+    action, row_id = cq.data.split(":")
+    query = context.user_data.get("query")
+    offset = context.user_data.get("offset", 0)
+    if action == "del":
+        await cq.answer()
+        markup = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ بله، حذف شود", callback_data=f"delok:{row_id}"),
+            InlineKeyboardButton("❌ انصراف", callback_data="delno:0")]])
+        await cq.edit_message_reply_markup(markup)
+        return
+    if action == "delok":
+        ok = await asyncio.to_thread(db.delete_row, int(row_id))
+        log.info("Admin %s deleted row %s (%s)", cq.from_user.id, row_id, "ok" if ok else "missing")
+        await cq.answer("🗑 حذف شد." if ok else "این ردیف قبلاً حذف شده بود.")
+    else:
+        await cq.answer()
+    if not query:
+        await cq.edit_message_reply_markup(None)
+        return
+    text, markup = await run_search(query, offset, True)
     await cq.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 
@@ -142,7 +181,8 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/files — فهرست فایل‌ها")
     if is_admin(update.effective_user.id):
         text += ("\n\nادمین: فایل‌های CSV و DB را در پوشه‌ی data بگذارید تا خودکار ثبت شوند،"
-                 " یا فایل‌های زیر ۲۰ مگابایت را همین‌جا بفرستید.\n/reload — بررسی فوری پوشه")
+                 " یا فایل‌های زیر ۲۰ مگابایت را همین‌جا بفرستید.\n/reload — بررسی فوری پوشه\n"
+                 "زیر هر نتیجه‌ی جستجو دکمه‌ی 🗑 هست تا همان ردیف را از ایندکس حذف کنید.")
     await update.effective_message.reply_text(text)
 
 
@@ -218,6 +258,7 @@ def build_app() -> Application:
     app.add_handler(MessageHandler(private & filters.Document.ALL, on_document))
     app.add_handler(MessageHandler(private & filters.TEXT & ~filters.COMMAND, on_search))
     app.add_handler(CallbackQueryHandler(on_page, pattern=r"^page:\d+$"))
+    app.add_handler(CallbackQueryHandler(on_delete, pattern=r"^(del|delok|delno):\d+$"))
     return app
 
 

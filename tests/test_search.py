@@ -37,6 +37,16 @@ class SearchTest(unittest.TestCase):
         self.assertEqual(self.db.search("مریم تهران")[0], 0)  # all words required
         self.assertEqual(self.db.search('"مریم کاظمی"')[1][0][1], 2)
 
+    def test_delete_row(self):
+        self.add("d", "d.csv", b"a,b\nfoo,1\nfoo,2\nbar,3\n")
+        _, res = self.db.search("foo", with_ids=True)
+        self.assertTrue(self.db.delete_row(res[0][3]))
+        self.assertFalse(self.db.delete_row(res[0][3]))
+        total, res = self.db.search("foo")
+        self.assertEqual((total, res[0][1]), (1, 2))  # row numbers stay stable
+        self.assertEqual(self.db.search("bar")[0], 1)
+        self.assertEqual(self.db.list_files()[0][2], 2)
+
     def test_cp1256_and_delete(self):
         _, count = self.add("u2", "old.csv", "name,city\nحسن,اصفهان\n".encode("cp1256"))
         self.assertTrue(self.db.has_file("u2"))
