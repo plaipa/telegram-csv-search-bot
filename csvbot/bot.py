@@ -11,6 +11,7 @@ import time
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
+from telegram.error import InvalidToken, NetworkError
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, filters)
 
@@ -68,7 +69,7 @@ async def scanner(app: Application):
 
 
 async def post_init(app: Application):
-    log.info("Watching folder %s", config.DATA_DIR)
+    log.info("Bot started as @%s, watching folder %s", app.bot.username, config.DATA_DIR)
     app.bot_data["scanner"] = asyncio.get_running_loop().create_task(scanner(app))
 
 
@@ -221,8 +222,12 @@ def build_app() -> Application:
 def main():
     if not config.ADMIN_IDS:
         log.warning("ADMIN_IDS is empty: nobody gets file notifications or /reload")
-    log.info("Bot started")
-    build_app().run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        build_app().run_polling(allowed_updates=Update.ALL_TYPES)
+    except InvalidToken:
+        raise SystemExit("❌ Telegram rejected BOT_TOKEN; copy it again from @BotFather into .env")
+    except NetworkError as e:
+        raise SystemExit(f"❌ Cannot reach Telegram ({e}); turn on the VPN and run: python -m csvbot.check")
 
 
 if __name__ == "__main__":
