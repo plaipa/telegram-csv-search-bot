@@ -28,7 +28,11 @@ def channel_ref():
 
 def proxy() -> dict | None:
     """PROXY from .env, e.g. socks5://127.0.0.1:10808 (local VPN client port)."""
-    url = os.getenv("PROXY", "").strip()
+    return parse_proxy(os.getenv("PROXY", ""))
+
+
+def parse_proxy(url: str) -> dict | None:
+    url = url.strip()
     if not url:
         return None
     p = urlparse(url)

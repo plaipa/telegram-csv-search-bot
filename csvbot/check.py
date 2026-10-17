@@ -1,14 +1,20 @@
 """Diagnose setup problems step by step. Usage: python -m csvbot.check"""
 import asyncio
+import logging
 import os
+import re
 import socket
 import sqlite3
+import subprocess
 import sys
 
 OK, FAIL, WARN = "✅", "❌", "⚠️"
 # Same file csvbot.config loads: .env in the project folder.
 ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
 failed = False
+# Default local proxy ports of common VPN clients (v2rayN, V2RayU, sing-box,
+# Clash, Clash Verge, Hiddify, ...), tried when Telegram is unreachable.
+COMMON_PORTS = (10808, 10809, 1080, 1087, 2080, 7890, 7897, 12334, 8889)
 
 
 def report(status: str, text: str, hint: str = ""):
@@ -76,25 +82,111 @@ def check_proxy() -> bool:
         report(OK, f"پروکسی {proxy['addr']}:{proxy['port']} در دسترس است")
         return True
     except OSError:
-        report(FAIL, f"به پروکسی {proxy['addr']}:{proxy['port']} وصل نشد",
+        report(WARN, f"به پروکسی {proxy['addr']}:{proxy['port']} وصل نشد",
                "VPN روشن نیست یا شماره پورت SOCKS با تنظیمات برنامه‌ی VPN یکی نیست")
-        return False
+        return True  # check_telegram will look for a working proxy
 
 
-async def check_telegram():
+def parse_scutil(out: str) -> list[str]:
+    """Proxy URLs from macOS `scutil --proxy` output (set by most VPN apps)."""
+    d = dict(re.findall(r"^\s*(\w+)\s*:\s*(\S+)\s*$", out, re.M))
+    urls = []
+    for kind, scheme in (("SOCKS", "socks5"), ("HTTPS", "http"), ("HTTP", "http")):
+        if d.get(f"{kind}Enable") == "1" and d.get(f"{kind}Proxy") and d.get(f"{kind}Port"):
+            urls.append(f"{scheme}://{d[kind + 'Proxy']}:{d[kind + 'Port']}")
+    return urls
+
+
+def proxy_candidates() -> list[str]:
+    urls = []
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(["scutil", "--proxy"], capture_output=True, text=True, timeout=5).stdout
+            urls += parse_scutil(out)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    for var in ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy"):
+        if os.getenv(var):
+            urls.append(os.environ[var].replace("socks5h://", "socks5://"))
+    urls += [f"{scheme}://127.0.0.1:{port}" for port in COMMON_PORTS for scheme in ("socks5", "http")]
+    result = []
+    for url in dict.fromkeys(urls):
+        from .config import parse_proxy
+        try:
+            p = parse_proxy(url)
+            socket.create_connection((p["addr"], p["port"]), timeout=1).close()
+            result.append(url)
+        except (SystemExit, OSError, TypeError):
+            continue
+    return result
+
+
+async def connect(proxy_url: str | None):
+    """Return a connected client, or None."""
     from telethon import TelegramClient
     from telethon.sessions import StringSession
 
     from . import config
     client = TelegramClient(StringSession(), config.API_ID, config.API_HASH,
-                            proxy=config.proxy(), connection_retries=1, timeout=15)
+                            proxy=config.parse_proxy(proxy_url or ""),
+                            connection_retries=1, timeout=10)
     try:
-        await asyncio.wait_for(client.connect(), 40)
-    except Exception as e:
-        report(FAIL, f"اتصال به تلگرام برقرار نشد ({type(e).__name__})",
-               "تلگرام فیلتر است: VPN را روشن کنید و PROXY را تنظیم کنید یا VPN را در حالت TUN بگذارید")
-        return
-    report(OK, "اتصال به سرورهای تلگرام برقرار شد")
+        await asyncio.wait_for(client.connect(), 30)
+        return client
+    except Exception:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+        return None
+
+
+def save_proxy(url: str):
+    with open(ENV_PATH, encoding="utf-8") as f:
+        lines = [line for line in f.read().splitlines() if not line.startswith("PROXY=")]
+    lines.append(f"PROXY={url}")
+    with open(ENV_PATH, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+async def find_proxy():
+    """Telegram is unreachable with the current settings: look for a local
+    VPN proxy that works and offer to save it to .env."""
+    print("\n🔎 دنبال پروکسی برنامه‌ی VPN روی این کامپیوتر می‌گردم...")
+    current = os.getenv("PROXY", "").strip()
+    for url in proxy_candidates():
+        if url == current:
+            continue
+        print(f"   امتحان {url} ...")
+        client = await connect(url)
+        if client:
+            report(OK, f"از طریق {url} به تلگرام وصل شد")
+            answer = "y"
+            if sys.stdin.isatty():
+                answer = input(f"   این را در .env ذخیره کنم؟ (PROXY={url}) [Y/n] ").strip().lower() or "y"
+            if answer.startswith("y"):
+                save_proxy(url)
+                os.environ["PROXY"] = url
+                print("   ذخیره شد.")
+            else:
+                print(f"   خودتان این خط را در .env بنویسید: PROXY={url}")
+            return client
+    report(FAIL, "هیچ پروکسی کارآمدی پیدا نشد",
+           "VPN را روشن کنید و دوباره اجرا کنید. اگر روشن است، حالت TUN / Enhanced Mode را فعال کنید "
+           "یا پورت SOCKS را از تنظیمات برنامه پیدا کرده و در PROXY بنویسید")
+    return None
+
+
+async def check_telegram():
+    from . import config
+    client = await connect(os.getenv("PROXY", ""))
+    if client:
+        report(OK, "اتصال به سرورهای تلگرام برقرار شد")
+    else:
+        print(f"{WARN} با تنظیمات فعلی به تلگرام وصل نشد")
+        client = await find_proxy()
+        if not client:
+            return
     try:
         try:
             await client.sign_in(bot_token=config.BOT_TOKEN)
@@ -125,6 +217,7 @@ async def check_telegram():
 
 
 def main():
+    logging.getLogger("telethon").setLevel(logging.CRITICAL)
     print("بررسی تنظیمات ربات...\n")
     if check_local() and not failed and check_proxy():
         asyncio.run(check_telegram())
