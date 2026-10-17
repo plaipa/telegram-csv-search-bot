@@ -6,12 +6,10 @@ cd "$(dirname "$0")/.."
 APP_DIR=$(pwd)
 
 sudo apt-get update -q
-sudo apt-get install -y -q python3-venv python3-pip tmux git
+sudo apt-get install -y -q python3-venv python3-pip git
 python3 -m venv .venv
 .venv/bin/pip install -q --upgrade pip
 .venv/bin/pip install -q -r requirements.txt
-# Optional C speed-up for downloads; only use a prebuilt wheel (no compiler needed).
-.venv/bin/pip install -q --only-binary=:all: cryptg || echo "cryptg unavailable: downloads will be slower"
 
 if [ ! -f .env ]; then
     cp .env.example .env

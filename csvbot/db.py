@@ -143,6 +143,16 @@ class Database:
         finally:
             con.close()
 
+    def unique_ids(self) -> set[str]:
+        with closing(self._connect()) as con:
+            return {r[0] for r in con.execute(
+                "SELECT unique_id FROM files WHERE done = 1 AND unique_id IS NOT NULL")}
+
+    def delete_unique_id(self, unique_id: str) -> bool:
+        with closing(self._connect()) as con:
+            found = con.execute("SELECT id FROM files WHERE unique_id = ?", (unique_id,)).fetchone()
+        return self.delete_file(found[0]) if found else False
+
     def list_files(self) -> list[tuple]:
         with closing(self._connect()) as con:
             return con.execute(

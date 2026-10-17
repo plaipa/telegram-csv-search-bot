@@ -1,8 +1,10 @@
 .env
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
+*.db.lock
+*.session
 __pycache__/
 .venv/
-*.session
 downloads/
-*.db.lock

@@ -1,26 +1,33 @@
-"""Telegram bot that indexes CSV files posted to a channel and searches them.
+"""Telegram bot that searches every CSV and SQLite file in a folder.
 
-Uses Telethon (MTProto) instead of the Bot HTTP API so files of several GB
-can be downloaded; the Bot API is limited to 20 MB.
+Files placed in DATA_DIR (default: ./data) are indexed automatically; the
+folder is re-scanned every SCAN_INTERVAL seconds and on /reload.
 """
 import asyncio
 import html
 import logging
+import os
+import time
 
-from telethon import Button, TelegramClient, events
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
+from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
+                          ContextTypes, MessageHandler, filters)
 
 from . import config
 from .db import Database
-from .indexer import index_message, is_csv
+from .sources import CSV_EXT, DB_EXT, FolderIndex
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s",
                     level=logging.INFO)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("csvbot")
 
 MAX_VALUE_LEN = 300
+MAX_UPLOAD = 20 * 1024 * 1024  # Bot API download limit
 db = Database(config.DB_PATH)
-bot = TelegramClient("bot", config.API_ID, config.API_HASH, proxy=config.proxy())
-last_query: dict[int, str] = {}
+folder = FolderIndex(db, config.DATA_DIR)
+scan_lock = asyncio.Lock()
 
 
 def is_admin(user_id: int) -> bool:
@@ -31,7 +38,7 @@ def can_search(user_id: int) -> bool:
     return not config.ALLOWED_IDS or user_id in config.ALLOWED_IDS or is_admin(user_id)
 
 
-async def notify_admins(text: str):
+async def notify_admins(bot, text: str):
     for admin in config.ADMIN_IDS:
         try:
             await bot.send_message(admin, text)
@@ -39,39 +46,35 @@ async def notify_admins(text: str):
             log.warning("Could not notify admin %s", admin)
 
 
-@bot.on(events.NewMessage(func=lambda e: e.is_channel and not e.is_group))
-async def on_channel_post(event):
-    if config.CHANNEL:
-        ref = config.channel_ref()
-        chat = await event.get_chat()
-        if ref not in (event.chat_id, getattr(chat, "username", None), "@" + (getattr(chat, "username", "") or "")):
-            return
-    if not is_csv(event.document):
-        return
-    try:
-        result = await index_message(bot, db, event.message)
-    except Exception:
-        log.exception("Failed to index channel file")
-        result = "❌ خطا در پردازش فایل کانال."
-    await notify_admins(result)
+async def run_scan(app: Application) -> dict:
+    """Index new/changed files in the folder; one scan at a time."""
+    loop = asyncio.get_running_loop()
+
+    def on_indexed(name: str, count: int):
+        asyncio.run_coroutine_threadsafe(
+            notify_admins(app.bot, f"✅ «{name}» با {count:,} ردیف ثبت شد."), loop)
+
+    async with scan_lock:
+        return await asyncio.to_thread(folder.sync, on_indexed)
 
 
-@bot.on(events.NewMessage(func=lambda e: e.is_private and e.document is not None))
-async def on_private_document(event):
-    """Admins forward old CSV files from the channel to index them."""
-    if not is_admin(event.sender_id):
-        await event.reply("⛔️ فقط ادمین می‌تواند فایل اضافه کند.")
-        return
-    if not is_csv(event.document):
-        await event.reply("فقط فایل‌های CSV پشتیبانی می‌شوند.")
-        return
-    status = await event.reply("⏳ در صف پردازش...")
-    try:
-        result = await index_message(bot, db, event.message, report=status.edit)
-    except Exception:
-        log.exception("Failed to index file")
-        result = "❌ خطا در پردازش فایل."
-    await status.edit(result)
+async def scanner(app: Application):
+    while True:
+        try:
+            await run_scan(app)
+        except Exception:
+            log.exception("Folder scan failed")
+        await asyncio.sleep(config.SCAN_INTERVAL)
+
+
+async def post_init(app: Application):
+    log.info("Watching folder %s", config.DATA_DIR)
+    app.bot_data["scanner"] = asyncio.get_running_loop().create_task(scanner(app))
+
+
+async def post_shutdown(app: Application):
+    if task := app.bot_data.get("scanner"):
+        task.cancel()
 
 
 def format_results(query: str, total: int, results, offset: int) -> str:
@@ -91,13 +94,13 @@ def format_results(query: str, total: int, results, offset: int) -> str:
     return text if len(text) <= 4000 else text[:3990] + "…"
 
 
-def pager(total: int, offset: int):
+def pager(total: int, offset: int) -> InlineKeyboardMarkup | None:
     size, buttons = config.PAGE_SIZE, []
     if offset > 0:
-        buttons.append(Button.inline("« قبلی", f"page:{max(offset - size, 0)}".encode()))
+        buttons.append(InlineKeyboardButton("« قبلی", callback_data=f"page:{max(offset - size, 0)}"))
     if offset + size < total:
-        buttons.append(Button.inline("بعدی »", f"page:{offset + size}".encode()))
-    return [buttons] if buttons else None
+        buttons.append(InlineKeyboardButton("بعدی »", callback_data=f"page:{offset + size}"))
+    return InlineKeyboardMarkup([buttons]) if buttons else None
 
 
 async def run_search(query: str, offset: int):
@@ -105,68 +108,121 @@ async def run_search(query: str, offset: int):
     return format_results(query, total, results, offset), pager(total, offset)
 
 
-START_TEXT = ("سلام! 👋\n"
-              "هر کلمه یا عبارتی را بفرستید تا در فایل‌های CSV جستجو کنم.\n\n"
-              "• چند کلمه: ردیف‌هایی که همه کلمات را دارند\n"
-              "• عبارت داخل \"گیومه\": جستجوی دقیق همان عبارت\n\n"
-              "دستورات: /files")
-ADMIN_TEXT = ("\n\nادمین: فایل‌های CSV جدید کانال خودکار ثبت می‌شوند. فایل‌های قدیمی را"
-              " از کانال به همین ربات فوروارد کنید.\n/delete شناسه — حذف یک فایل")
+async def on_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if not can_search(update.effective_user.id):
+        await msg.reply_text("⛔️ شما اجازه استفاده از این ربات را ندارید.")
+        return
+    query = " ".join(context.args) if context.args is not None else msg.text
+    if not query.strip():
+        await msg.reply_text("عبارت مورد نظر را بنویسید. مثال: علی رضایی")
+        return
+    context.user_data["query"] = query
+    text, markup = await run_search(query, 0)
+    await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 
-@bot.on(events.NewMessage(func=lambda e: e.is_private and e.document is None and e.raw_text))
-async def on_text(event):
-    text, uid = event.raw_text.strip(), event.sender_id
-    if text.startswith("/start"):
-        await event.reply(START_TEXT + (ADMIN_TEXT if is_admin(uid) else ""))
+async def on_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cq = update.callback_query
+    query = context.user_data.get("query")
+    if not query or not can_search(cq.from_user.id):
+        await cq.answer("جستجو منقضی شده، دوباره جستجو کنید.")
         return
-    if not can_search(uid):
-        await event.reply("⛔️ شما اجازه استفاده از این ربات را ندارید.")
-        return
-    if text.startswith("/files"):
-        files = db.list_files()
-        lines = [f"{fid}. {name} — {count:,} ردیف" for fid, name, count in files]
-        await event.reply("📚 فایل‌های ثبت‌شده:\n" + "\n".join(lines) if lines else "هنوز فایلی ثبت نشده است.")
-        return
-    if text.startswith("/delete"):
-        if not is_admin(uid):
-            return
-        arg = text.split(maxsplit=1)[1:] or [""]
-        if not arg[0].isdigit():
-            await event.reply("استفاده: /delete شناسه_فایل (شناسه را از /files ببینید)")
-            return
-        ok = await asyncio.to_thread(db.delete_file, int(arg[0]))
-        await event.reply("🗑 حذف شد." if ok else "فایلی با این شناسه پیدا نشد.")
-        return
-    if text.startswith("/search"):
-        text = text[len("/search"):].strip()
-    elif text.startswith("/"):
-        return
-    if not text:
-        await event.reply("عبارت مورد نظر را بنویسید. مثال: علی رضایی")
-        return
-    last_query[uid] = text
-    body, buttons = await run_search(text, 0)
-    await event.reply(body, parse_mode="html", buttons=buttons)
+    await cq.answer()
+    text, markup = await run_search(query, int(cq.data.split(":")[1]))
+    await cq.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 
-@bot.on(events.CallbackQuery(pattern=rb"^page:\d+$"))
-async def on_page(event):
-    query = last_query.get(event.sender_id)
-    if not query or not can_search(event.sender_id):
-        await event.answer("جستجو منقضی شده، دوباره جستجو کنید.")
+async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = ("سلام! 👋\n"
+            "هر کلمه یا عبارتی را بفرستید تا در فایل‌ها جستجو کنم.\n\n"
+            "• چند کلمه: ردیف‌هایی که همه کلمات را دارند\n"
+            "• عبارت داخل \"گیومه\": جستجوی دقیق همان عبارت\n\n"
+            "/files — فهرست فایل‌ها")
+    if is_admin(update.effective_user.id):
+        text += ("\n\nادمین: فایل‌های CSV و DB را در پوشه‌ی data بگذارید تا خودکار ثبت شوند،"
+                 " یا فایل‌های زیر ۲۰ مگابایت را همین‌جا بفرستید.\n/reload — بررسی فوری پوشه")
+    await update.effective_message.reply_text(text)
+
+
+async def on_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not can_search(update.effective_user.id):
         return
-    await event.answer()
-    body, buttons = await run_search(query, int(event.data.split(b":")[1]))
-    await event.edit(body, parse_mode="html", buttons=buttons)
+    files = db.list_files()
+    if not files:
+        await update.effective_message.reply_text("هنوز فایلی ثبت نشده است.")
+        return
+    lines = [f"• {name} — {count:,} ردیف" for _, name, count in files]
+    text = "📚 فایل‌های ثبت‌شده:\n" + "\n".join(lines)
+    await update.effective_message.reply_text(text[:4000])
+
+
+async def on_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if not is_admin(update.effective_user.id):
+        return
+    status = await msg.reply_text("⏳ در حال بررسی پوشه...")
+    r = await run_scan(context.application)
+    text = f"✅ بررسی شد: {r['added']} مورد جدید، {r['removed']} مورد حذف‌شده."
+    if r["pending"]:
+        text += f"\n⏳ {r['pending']} فایل در حال کپی است و کمی بعد ثبت می‌شود."
+    if r["errors"]:
+        text += f"\n❌ {r['errors']} فایل قابل خواندن نبود (جزئیات در لاگ)."
+    await status.edit_text(text)
+
+
+async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admins can send small CSV/DB files; they are saved into the folder."""
+    msg = update.effective_message
+    doc = msg.document
+    if not is_admin(update.effective_user.id):
+        await msg.reply_text("⛔️ فقط ادمین می‌تواند فایل اضافه کند.")
+        return
+    name = os.path.basename(doc.file_name or "")
+    if not name.lower().endswith(CSV_EXT + DB_EXT):
+        await msg.reply_text("فقط فایل‌های CSV و DB پشتیبانی می‌شوند.")
+        return
+    if doc.file_size and doc.file_size > MAX_UPLOAD:
+        await msg.reply_text("⚠️ فایل بزرگ‌تر از ۲۰ مگابایت است؛ آن را مستقیم در پوشه‌ی data کپی کنید.")
+        return
+    status = await msg.reply_text("⏳ در حال دریافت...")
+    target_dir = os.path.join(config.DATA_DIR, "uploads")
+    os.makedirs(target_dir, exist_ok=True)
+    path = os.path.join(target_dir, name)
+    tg_file = await context.bot.get_file(doc.file_id)
+    await tg_file.download_to_drive(path + ".part")
+    os.replace(path + ".part", path)
+    past = time.time() - 120  # the file is complete; skip the "still copying" wait
+    os.utime(path, (past, past))
+    await status.edit_text("⏳ در حال ثبت...")
+    r = await run_scan(context.application)
+    await status.edit_text(f"✅ ذخیره و ثبت شد ({r['added']} مورد)." if not r["errors"]
+                           else "❌ فایل ذخیره شد ولی قابل خواندن نبود.")
+
+
+def build_app() -> Application:
+    if not config.BOT_TOKEN:
+        raise SystemExit("BOT_TOKEN is not set in .env (run: python -m csvbot.check)")
+    builder = Application.builder().token(config.BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown)
+    if config.proxy():
+        builder = builder.proxy(config.proxy()).get_updates_proxy(config.proxy())
+    app = builder.build()
+    private = filters.ChatType.PRIVATE
+    app.add_handler(CommandHandler("start", on_start, filters=private))
+    app.add_handler(CommandHandler("search", on_search, filters=private))
+    app.add_handler(CommandHandler("files", on_files, filters=private))
+    app.add_handler(CommandHandler("reload", on_reload, filters=private))
+    app.add_handler(MessageHandler(private & filters.Document.ALL, on_document))
+    app.add_handler(MessageHandler(private & filters.TEXT & ~filters.COMMAND, on_search))
+    app.add_handler(CallbackQueryHandler(on_page, pattern=r"^page:\d+$"))
+    return app
 
 
 def main():
     if not config.ADMIN_IDS:
-        log.warning("ADMIN_IDS is empty: nobody can add files from private chat")
-    bot.start(bot_token=config.BOT_TOKEN)
+        log.warning("ADMIN_IDS is empty: nobody gets file notifications or /reload")
     log.info("Bot started")
-    bot.run_until_disconnected()
+    build_app().run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
