@@ -3,7 +3,7 @@ import tempfile
 import unittest
 
 from csvbot.db import Database
-from csvbot.loader import parse_csv
+from csvbot.loader import read_csv
 
 
 class SearchTest(unittest.TestCase):
@@ -14,35 +14,57 @@ class SearchTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def write(self, name: str, data: bytes) -> str:
+        path = os.path.join(self.tmp.name, name)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    def add(self, uid, name, data: bytes):
+        headers, rows = read_csv(self.write(name, data))
+        return headers, self.db.add_file(uid, name, headers, rows)
+
     def test_utf8_persian(self):
-        data = "نام;شهر;تلفن\nعلي رضايي;تهران;۰۹۱۲۱۲۳۴۵۶۷\nمریم کاظمی;شیراز;09351112233\n".encode("utf-8-sig")
-        headers, rows = parse_csv(data)
-        self.assertEqual(headers, ["نام", "شهر", "تلفن"])
-        self.db.add_file("u1", "people.csv", headers, rows)
+        data = "نام;شهر;تلفن\n\nعلي رضايي;تهران;۰۹۱۲۱۲۳۴۵۶۷\nمریم کاظمی;شیراز;09351112233\n"
+        headers, count = self.add("u1", "people.csv", data.encode("utf-8-sig"))
+        self.assertEqual((headers, count), (["نام", "شهر", "تلفن"], 2))
         # Arabic ي in data, Persian ی in query; Persian digits in data, Latin in query
         total, res = self.db.search("علی")
         self.assertEqual(total, 1)
-        self.assertEqual(res[0][2]["شهر"], "تهران")
+        self.assertEqual(res[0], ("people.csv", 1, {"نام": "علي رضايي", "شهر": "تهران", "تلفن": "۰۹۱۲۱۲۳۴۵۶۷"}))
         self.assertEqual(self.db.search("09121234567")[0], 1)
         self.assertEqual(self.db.search("۰۹۳۵")[0], 1)  # prefix match
         self.assertEqual(self.db.search("مریم تهران")[0], 0)  # all words required
-        self.assertEqual(self.db.search('"مریم کاظمی"')[0], 1)
+        self.assertEqual(self.db.search('"مریم کاظمی"')[1][0][1], 2)
 
     def test_cp1256_and_delete(self):
-        data = "name,city\nحسن,اصفهان\n".encode("cp1256")
-        headers, rows = parse_csv(data)
-        fid = self.db.add_file("u2", "old.csv", headers, rows)
+        _, count = self.add("u2", "old.csv", "name,city\nحسن,اصفهان\n".encode("cp1256"))
         self.assertTrue(self.db.has_file("u2"))
         self.assertEqual(self.db.search("اصفهان")[0], 1)
+        fid = self.db.list_files()[0][0]
         self.assertTrue(self.db.delete_file(fid))
         self.assertEqual(self.db.search("اصفهان")[0], 0)
+        self.assertEqual(self.db.list_files(), [])
 
-    def test_paging_and_garbage_query(self):
-        rows = [[f"item {i}", "x"] for i in range(12)]
-        self.db.add_file(None, "a.csv", ["a", "b"], rows)
+    def test_two_files_reindex_and_paging(self):
+        self.add("a", "a.csv", ("a,b\n" + "".join(f"item {i},x\n" for i in range(12))).encode())
+        self.add("b", "b.csv", b"c\nitem z\n")
+        self.add("a", "a.csv", ("a,b\n" + "".join(f"item {i},x\n" for i in range(12))).encode())
         total, res = self.db.search("item", limit=5, offset=10)
-        self.assertEqual((total, len(res)), (12, 2))
+        self.assertEqual((total, len(res)), (13, 3))
+        self.assertEqual([(r[0], r[1]) for r in res], [("a.csv", 10), ("a.csv", 11), ("a.csv", 12)])
+        self.assertEqual(self.db.search("z")[1], [("b.csv", 1, {"c": "item z"})])
         self.assertEqual(self.db.search('*) OR "')[0], 0)
+
+    def test_interrupted_file_is_cleaned_up(self):
+        def broken():
+            yield ["x"]
+            raise IOError("disk")
+        with self.assertRaises(IOError):
+            self.db.add_file("c", "c.csv", ["h"], broken())
+        Database(self.db.path)  # restart
+        self.assertFalse(self.db.has_file("c"))
+        self.assertEqual(self.db.search("x")[0], 0)
 
 
 if __name__ == "__main__":

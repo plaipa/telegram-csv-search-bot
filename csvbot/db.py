@@ -1,10 +1,19 @@
-"""SQLite full-text index of CSV rows."""
-import json
+"""SQLite full-text index of CSV rows, designed for tens of millions of rows.
+
+Raw rows are stored once in `rows`; `rows_fts` is a contentless FTS5 index
+over the normalized text, sharing rowids with `rows`. Each file occupies a
+contiguous rowid range [first_id, last_id].
+"""
 import sqlite3
 import time
 from contextlib import closing
+from typing import Callable, Iterable
 
 from .text import normalize, tokens
+
+SEP = "\x1f"
+BATCH = 20_000
+COUNT_CAP = 1000
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -12,94 +21,150 @@ CREATE TABLE IF NOT EXISTS files (
     unique_id TEXT UNIQUE,
     name TEXT NOT NULL,
     headers TEXT NOT NULL,
-    row_count INTEGER NOT NULL,
+    first_id INTEGER,
+    last_id INTEGER,
+    row_count INTEGER NOT NULL DEFAULT 0,
+    done INTEGER NOT NULL DEFAULT 0,
     added_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS rows (id INTEGER PRIMARY KEY, data TEXT NOT NULL);
 CREATE VIRTUAL TABLE IF NOT EXISTS rows_fts USING fts5(
-    body,
-    file_id UNINDEXED,
-    row_num UNINDEXED,
-    data UNINDEXED,
-    tokenize = 'unicode61 remove_diacritics 2'
+    body, content='', contentless_delete=1,
+    tokenize='unicode61 remove_diacritics 2'
 );
 """
 
 
 class Database:
     def __init__(self, path: str):
+        if sqlite3.sqlite_version_info < (3, 43):
+            raise RuntimeError(f"SQLite >= 3.43 is required (found {sqlite3.sqlite_version})")
         self.path = path
         with closing(self._connect()) as con:
+            con.execute("PRAGMA journal_mode=WAL")
             con.executescript(SCHEMA)
+        self.cleanup_incomplete()
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.path)
+        con = sqlite3.connect(self.path, timeout=60)
+        con.execute("PRAGMA cache_size=-200000")  # ~200 MB
+        return con
+
+    def cleanup_incomplete(self):
+        """Remove files whose indexing was interrupted (e.g. by a crash)."""
+        with closing(self._connect()) as con:
+            ids = [r[0] for r in con.execute("SELECT id FROM files WHERE done = 0")]
+        for file_id in ids:
+            self.delete_file(file_id)
 
     def has_file(self, unique_id: str) -> bool:
         with closing(self._connect()) as con:
             return con.execute(
-                "SELECT 1 FROM files WHERE unique_id = ?", (unique_id,)
+                "SELECT 1 FROM files WHERE unique_id = ? AND done = 1", (unique_id,)
             ).fetchone() is not None
 
-    def add_file(self, unique_id: str | None, name: str,
-                 headers: list[str], rows: list[list[str]]) -> int:
-        with closing(self._connect()) as con, con:
-            cur = con.execute(
-                "INSERT INTO files (unique_id, name, headers, row_count, added_at)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (unique_id, name, json.dumps(headers, ensure_ascii=False),
-                 len(rows), int(time.time())),
-            )
-            file_id = cur.lastrowid
-            con.executemany(
-                "INSERT INTO rows_fts (body, file_id, row_num, data) VALUES (?, ?, ?, ?)",
-                ((normalize(" ".join(row)), file_id, i + 2,
-                  json.dumps(row, ensure_ascii=False))
-                 for i, row in enumerate(rows)),
-            )
-            return file_id
+    def add_file(self, unique_id: str | None, name: str, headers: list[str],
+                 rows: Iterable[list[str]],
+                 progress: Callable[[int], None] | None = None) -> int:
+        """Index rows in batches; returns the number of rows indexed."""
+        with closing(self._connect()) as con:
+            old = con.execute("SELECT id FROM files WHERE unique_id = ?", (unique_id,)).fetchone()
+        if old:
+            self.delete_file(old[0])
+        con = self._connect()
+        try:
+            con.execute("PRAGMA synchronous=OFF")
+            with con:
+                file_id = con.execute(
+                    "INSERT INTO files (unique_id, name, headers, added_at) VALUES (?, ?, ?, ?)",
+                    (unique_id, name, SEP.join(headers), int(time.time())),
+                ).lastrowid
+            next_id = (con.execute("SELECT max(id) FROM rows").fetchone()[0] or 0) + 1
+            first_id, count, batch = next_id, 0, []
+
+            def flush():
+                with con:
+                    con.executemany("INSERT INTO rows (id, data) VALUES (?, ?)",
+                                    ((i, SEP.join(r)) for i, r in batch))
+                    con.executemany("INSERT INTO rows_fts (rowid, body) VALUES (?, ?)",
+                                    ((i, normalize(" ".join(r))) for i, r in batch))
+                    con.execute("UPDATE files SET first_id = ?, last_id = ? WHERE id = ?",
+                                (first_id, batch[-1][0], file_id))
+                batch.clear()
+                if progress:
+                    progress(count)
+
+            for row in rows:
+                batch.append((next_id, row))
+                next_id += 1
+                count += 1
+                if len(batch) >= BATCH:
+                    flush()
+            if batch:
+                flush()
+            with con:
+                con.execute("UPDATE files SET row_count = ?, done = 1 WHERE id = ?",
+                            (count, file_id))
+            return count
+        finally:
+            con.close()
 
     def list_files(self) -> list[tuple]:
         with closing(self._connect()) as con:
             return con.execute(
-                "SELECT id, name, row_count FROM files ORDER BY id"
+                "SELECT id, name, row_count FROM files WHERE done = 1 ORDER BY id"
             ).fetchall()
 
     def delete_file(self, file_id: int) -> bool:
         with closing(self._connect()) as con, con:
-            con.execute("DELETE FROM rows_fts WHERE file_id = ?", (file_id,))
-            return con.execute(
-                "DELETE FROM files WHERE id = ?", (file_id,)
-            ).rowcount > 0
+            found = con.execute(
+                "SELECT first_id, last_id FROM files WHERE id = ?", (file_id,)
+            ).fetchone()
+            if not found:
+                return False
+            first, last = found
+            if first is not None:
+                con.execute("DELETE FROM rows_fts WHERE rowid BETWEEN ? AND ?", (first, last))
+                con.execute("DELETE FROM rows WHERE id BETWEEN ? AND ?", (first, last))
+            con.execute("DELETE FROM files WHERE id = ?", (file_id,))
+            return True
+
+    def optimize(self):
+        with closing(self._connect()) as con, con:
+            con.execute("INSERT INTO rows_fts (rows_fts) VALUES ('optimize')")
 
     @staticmethod
     def build_query(query: str) -> str | None:
-        """Every word must appear (as a prefix); "quoted text" means exact phrase."""
+        """Every word must appear (as a prefix if 3+ chars); "quoted text" means exact phrase."""
         q = query.strip()
         if len(q) > 2 and q[0] in "\"«" and q[-1] in "\"»":
             words = tokens(q[1:-1])
             return '"' + " ".join(words) + '"' if words else None
         words = tokens(q)
-        return " ".join(f'"{w}"*' for w in words) if words else None
+        # Prefix-matching very short words expands to huge term lists; match them exactly.
+        return " ".join(f'"{w}"*' if len(w) >= 3 else f'"{w}"' for w in words) if words else None
 
     def search(self, query: str, limit: int = 5, offset: int = 0):
-        """Return (total, [(file_name, row_num, {header: value}), ...])."""
+        """Return (total, [(file_name, row_num, {header: value}), ...]).
+        total is capped at COUNT_CAP + 1 to stay fast on huge indexes."""
         match = self.build_query(query)
         if not match:
             return 0, []
         with closing(self._connect()) as con:
             total = con.execute(
-                "SELECT count(*) FROM rows_fts WHERE rows_fts MATCH ?", (match,)
+                "SELECT count(*) FROM (SELECT 1 FROM rows_fts WHERE rows_fts MATCH ? LIMIT ?)",
+                (match, COUNT_CAP + 1),
             ).fetchone()[0]
             found = con.execute(
-                "SELECT f.name, f.headers, r.row_num, r.data FROM rows_fts r"
-                " JOIN files f ON f.id = r.file_id"
-                " WHERE rows_fts MATCH ? ORDER BY rank LIMIT ? OFFSET ?",
+                "SELECT f.name, f.headers, r.id - f.first_id + 1, r.data"
+                " FROM (SELECT rowid FROM rows_fts WHERE rows_fts MATCH ?"
+                "       ORDER BY rowid LIMIT ? OFFSET ?) m"
+                " JOIN rows r ON r.id = m.rowid"
+                " JOIN files f ON r.id BETWEEN f.first_id AND f.last_id",
                 (match, limit, offset),
             ).fetchall()
         results = []
         for name, headers, row_num, data in found:
-            headers, values = json.loads(headers), json.loads(data)
-            results.append((name, row_num, {
-                h: v for h, v in zip(headers, values) if v
-            }))
+            fields = {h: v for h, v in zip(headers.split(SEP), data.split(SEP)) if v}
+            results.append((name, row_num, fields))
         return total, results
