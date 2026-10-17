@@ -5,3 +5,4 @@ __pycache__/
 .venv/
 *.session
 downloads/
+*.db.lock

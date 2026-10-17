@@ -1,0 +1,14 @@
+[Unit]
+Description=CSV search Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=@USER@
+WorkingDirectory=@APP_DIR@
+ExecStart=@APP_DIR@/.venv/bin/python -m csvbot.bot
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

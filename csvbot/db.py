@@ -6,7 +6,7 @@ contiguous rowid range [first_id, last_id].
 """
 import sqlite3
 import time
-from contextlib import closing
+from contextlib import closing, contextmanager
 from typing import Callable, Iterable
 
 from .text import normalize, tokens
@@ -14,6 +14,32 @@ from .text import normalize, tokens
 SEP = "\x1f"
 BATCH = 20_000
 COUNT_CAP = 1000
+
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+
+
+@contextmanager
+def writer_lock(db_path: str, wait: bool = True):
+    """Only one process (bot or sync script) may index at a time, because row
+    ids are allocated as contiguous ranges per file. Yields False if
+    wait=False and another process holds the lock."""
+    if fcntl is None:
+        yield True
+        return
+    with open(db_path + ".lock", "w") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -43,15 +69,18 @@ class Database:
         with closing(self._connect()) as con:
             con.execute("PRAGMA journal_mode=WAL")
             con.executescript(SCHEMA)
-        self.cleanup_incomplete()
+        with writer_lock(path, wait=False) as locked:
+            if locked:  # otherwise another process is indexing right now
+                self._cleanup_incomplete()
 
     def _connect(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.path, timeout=60)
         con.execute("PRAGMA cache_size=-200000")  # ~200 MB
         return con
 
-    def cleanup_incomplete(self):
-        """Remove files whose indexing was interrupted (e.g. by a crash)."""
+    def _cleanup_incomplete(self):
+        """Remove files whose indexing was interrupted (e.g. by a crash).
+        Must be called while holding the writer lock."""
         with closing(self._connect()) as con:
             ids = [r[0] for r in con.execute("SELECT id FROM files WHERE done = 0")]
         for file_id in ids:
@@ -67,6 +96,11 @@ class Database:
                  rows: Iterable[list[str]],
                  progress: Callable[[int], None] | None = None) -> int:
         """Index rows in batches; returns the number of rows indexed."""
+        with writer_lock(self.path):
+            self._cleanup_incomplete()
+            return self._add_file(unique_id, name, headers, rows, progress)
+
+    def _add_file(self, unique_id, name, headers, rows, progress) -> int:
         with closing(self._connect()) as con:
             old = con.execute("SELECT id FROM files WHERE unique_id = ?", (unique_id,)).fetchone()
         if old:

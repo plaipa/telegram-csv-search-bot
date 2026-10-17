@@ -17,6 +17,8 @@
   (مثال: ۱۰ فایل ۳ گیگی ≈ ۶۰ گیگ دیتابیس + ۳ گیگ موقت)
 
 ## راه‌اندازی
+> برای نصب روی **Oracle Cloud Free Tier** راهنمای قدم‌به‌قدم [docs/oracle-cloud.md](docs/oracle-cloud.md) را ببینید.
+
 1. در [my.telegram.org](https://my.telegram.org) → API development tools مقادیر `API_ID` و `API_HASH` را بگیرید.
 2. در [@BotFather](https://t.me/BotFather) ربات بسازید و توکن بگیرید.
 3. ربات را در کانال **ادمین** کنید.
