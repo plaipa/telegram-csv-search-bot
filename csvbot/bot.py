@@ -43,6 +43,29 @@ def can_search(user_id: int) -> bool:
         or user_id in added or is_admin(user_id)
 
 
+async def admin_contacts(bot, cache_store: dict) -> str:
+    """@usernames of the admins (looked up once); falls back to a profile link."""
+    cache = cache_store.get("admin_contacts")
+    if cache is None:
+        parts = []
+        for admin in config.ADMIN_IDS:
+            try:
+                username = (await bot.get_chat(admin)).username
+            except Exception:
+                username = None
+            parts.append(f"@{username}" if username else f'<a href="tg://user?id={admin}">ادمین</a>')
+        cache = cache_store["admin_contacts"] = "، ".join(parts)
+    return cache
+
+
+async def deny(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    contacts = await admin_contacts(context.bot, context.bot_data) if config.ADMIN_IDS else ""
+    text = "⛔️ شما به این ربات دسترسی ندارید."
+    if contacts:
+        text += f"\nبرای دریافت دسترسی با ادمین صحبت کنید و شناسه‌ی عددی خود ({update.effective_user.id}) را برایش بفرستید:\n{contacts}"
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
 async def notify_admins(bot, text: str):
     for admin in config.ADMIN_IDS:
         try:
@@ -124,7 +147,7 @@ async def run_search(query: str, offset: int, admin: bool = False):
 async def on_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if not can_search(update.effective_user.id):
-        await msg.reply_text("⛔️ شما اجازه استفاده از این ربات را ندارید.")
+        await deny(update, context)
         return
     query = " ".join(context.args) if context.args is not None else msg.text
     if not query.strip():
@@ -190,21 +213,23 @@ async def on_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not can_search(update.effective_user.id):
+        await deny(update, context)
+        return
     text = ("سلام! 👋\n"
             "هر کلمه یا عبارتی را بفرستید تا در فایل‌ها جستجو کنم.\n\n"
             "• چند کلمه: ردیف‌هایی که همه کلمات را دارند\n"
-            "• عبارت داخل \"گیومه\": جستجوی دقیق همان عبارت\n\n"
-            "/files — فهرست فایل‌ها")
+            "• عبارت داخل \"گیومه\": جستجوی دقیق همان عبارت")
     if is_admin(update.effective_user.id):
         text += ("\n\nادمین: فایل‌های CSV و DB را در پوشه‌ی data بگذارید تا خودکار ثبت شوند،"
-                 " یا فایل‌های زیر ۲۰ مگابایت را همین‌جا بفرستید.\n/reload — بررسی فوری پوشه\n"
+                 " یا فایل‌های زیر ۲۰ مگابایت را همین‌جا بفرستید.\n/reload — بررسی فوری پوشه\n/files — فهرست فایل‌ها\n"
                  "/adduser ID — افزودن کاربر، /deluser ID — حذف کاربر، /users — فهرست کاربران\n"
                  "زیر هر نتیجه‌ی جستجو دکمه‌ی 🗑 هست تا همان ردیف را از ایندکس حذف کنید.")
     await update.effective_message.reply_text(text)
 
 
 async def on_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not can_search(update.effective_user.id):
+    if not is_admin(update.effective_user.id):
         return
     files = db.list_files()
     if not files:
