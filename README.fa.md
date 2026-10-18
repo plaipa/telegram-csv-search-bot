@@ -106,7 +106,7 @@
 ### لینوکس و سرور
 روی Ubuntu یا Debian ربات به‌صورت **سرویس دائمی** نصب می‌شود. بعد از ری‌استارت سرور یا خطا، خودش دوباره روشن می‌شود.
 ```bash
-git clone https://github.com/plaipa/DB.git
+git clone https://github.com/plaipa/telegram-csv-search-bot.git
 cd DB
 bash deploy/setup.sh      # بار اول فایل .env را می‌سازد
 nano .env                 # BOT_TOKEN و ADMIN_IDS را پر کنید
@@ -120,7 +120,7 @@ bash deploy/setup.sh      # ربات را به‌صورت سرویس روشن م
 ### داکر
 روی هر سیستمی که Docker دارد (لینوکس، مک، ویندوز):
 ```bash
-git clone https://github.com/plaipa/DB.git telegram-csv-search-bot
+git clone https://github.com/plaipa/telegram-csv-search-bot.git telegram-csv-search-bot
 cd telegram-csv-search-bot
 cp .env.example .env      # BOT_TOKEN و ADMIN_IDS را پر کنید
 docker compose up -d --build

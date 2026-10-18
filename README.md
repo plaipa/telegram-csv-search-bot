@@ -31,7 +31,7 @@ Keywords: telegram bot, csv search, sqlite search, search csv in telegram, full-
 
 **Docker** (any OS)
 ```bash
-git clone https://github.com/plaipa/DB.git telegram-csv-search-bot
+git clone https://github.com/plaipa/telegram-csv-search-bot.git telegram-csv-search-bot
 cd telegram-csv-search-bot
 cp .env.example .env        # set BOT_TOKEN and ADMIN_IDS
 docker compose up -d --build

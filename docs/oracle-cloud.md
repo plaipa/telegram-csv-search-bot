@@ -39,7 +39,7 @@ df -h /
 
 ## ۴. نصب ربات
 ```bash
-git clone https://github.com/plaipa/DB.git
+git clone https://github.com/plaipa/telegram-csv-search-bot.git
 cd DB
 bash deploy/setup.sh
 ```

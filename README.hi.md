@@ -31,7 +31,7 @@
 
 **Docker** (किसी भी OS पर)
 ```bash
-git clone https://github.com/plaipa/DB.git telegram-csv-search-bot
+git clone https://github.com/plaipa/telegram-csv-search-bot.git telegram-csv-search-bot
 cd telegram-csv-search-bot
 cp .env.example .env        # BOT_TOKEN और ADMIN_IDS भरें
 docker compose up -d --build
