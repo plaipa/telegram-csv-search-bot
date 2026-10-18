@@ -7,7 +7,7 @@ _MAP = {
     "ك": "ک",
     "ة": "ه", "ۀ": "ه",
     "أ": "ا", "إ": "ا", "آ": "ا",
-    "‌": " ",  # zero-width non-joiner (نیم‌فاصله)
+    "‌": " ",  # zero-width non-joiner (Persian half-space)
     "‏": "", "‎": "", "﻿": "",
 }
 for i in range(10):

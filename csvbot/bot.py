@@ -318,7 +318,7 @@ async def on_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def on_audit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/audit [شناسه کاربر] [تعداد] — newest searches first."""
+    """/audit [user id] [count] — newest searches first."""
     if not is_admin(update.effective_user.id):
         return
     nums = [int(a) for a in context.args if a.isdigit()]
