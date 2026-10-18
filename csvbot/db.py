@@ -54,6 +54,11 @@ CREATE TABLE IF NOT EXISTS files (
     added_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, added_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS audit (
+    id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, user_id INTEGER NOT NULL,
+    name TEXT, query TEXT NOT NULL, total INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS audit_user_ts ON audit (user_id, ts);
 CREATE TABLE IF NOT EXISTS purged (
     file_id INTEGER, row_id INTEGER, PRIMARY KEY (file_id, row_id)
 ) WITHOUT ROWID;
@@ -190,6 +195,30 @@ class Database:
     def users(self) -> list[int]:
         with closing(self._connect()) as con:
             return [r[0] for r in con.execute("SELECT user_id FROM users ORDER BY added_at")]
+
+    def log_search(self, user_id: int, name: str, query: str, total: int):
+        with closing(self._connect()) as con, con:
+            con.execute("INSERT INTO audit (ts, user_id, name, query, total) VALUES (?, ?, ?, ?, ?)",
+                        (int(time.time()), user_id, name, query[:200], total))
+
+    def count_searches(self, user_id: int, since: int) -> int:
+        with closing(self._connect()) as con:
+            return con.execute("SELECT count(*) FROM audit WHERE user_id = ? AND ts >= ?",
+                               (user_id, since)).fetchone()[0]
+
+    def audit(self, limit: int = 20, user_id: int | None = None) -> list[tuple]:
+        """Newest first: (ts, user_id, name, query, total)."""
+        sql = "SELECT ts, user_id, name, query, total FROM audit"
+        args: tuple = ()
+        if user_id is not None:
+            sql, args = sql + " WHERE user_id = ?", (user_id,)
+        with closing(self._connect()) as con:
+            return con.execute(sql + " ORDER BY id DESC LIMIT ?", args + (limit,)).fetchall()
+
+    def purge_audit(self, days: int):
+        if days > 0:
+            with closing(self._connect()) as con, con:
+                con.execute("DELETE FROM audit WHERE ts < ?", (int(time.time()) - days * 86400,))
 
     def locate(self, row_id: int):
         """Where an indexed row lives in its source file: (file_id, unique_id,

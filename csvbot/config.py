@@ -29,6 +29,18 @@ SCAN_INTERVAL = int(os.getenv("SCAN_INTERVAL", "60"))
 PAGE_SIZE = int(os.getenv("PAGE_SIZE", "5"))
 
 
+def _int(name: str, default: int) -> int:
+    value = os.getenv(name, "").strip()
+    return int(value) if value.lstrip("-").isdigit() else default
+
+
+# Limits for non-admin users; 0 = unlimited.
+SEARCH_LIMIT_HOUR = _int("SEARCH_LIMIT_HOUR", 60)
+SEARCH_LIMIT_DAY = _int("SEARCH_LIMIT_DAY", 300)
+MAX_RESULTS = _int("MAX_RESULTS", 50)  # results viewable per search
+AUDIT_DAYS = _int("AUDIT_DAYS", 180)  # how long the search log is kept
+
+
 def proxy() -> str | None:
     """PROXY from .env, e.g. socks5://127.0.0.1:10808 (local VPN client port)."""
     return parse_proxy(os.getenv("PROXY", ""))

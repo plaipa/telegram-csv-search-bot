@@ -45,7 +45,8 @@ def check_local() -> bool:
         report(FAIL, "BOT_TOKEN پر نشده یا اشتباه است", "توکن را از @BotFather کپی کنید")
     admins = os.getenv("ADMIN_IDS", "").replace(",", " ").split()
     if not admins:
-        report(WARN, "ADMIN_IDS خالی است: اعلان ثبت فایل و /reload برای کسی کار نمی‌کند",
+        report(FAIL if not os.getenv("ALLOWED_USER_IDS", "").strip() else WARN,
+               "ADMIN_IDS خالی است: ربات پیش‌فرض بسته است و کسی نمی‌تواند از آن استفاده کند",
                "شناسه‌ی عددی خود را از @userinfobot بگیرید")
     elif not all(a.lstrip("-").isdigit() for a in admins):
         report(FAIL, f"ADMIN_IDS باید عدد باشد، نه نام کاربری: {' '.join(admins)}",

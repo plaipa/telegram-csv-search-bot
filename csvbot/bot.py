@@ -37,10 +37,20 @@ def is_admin(user_id: int) -> bool:
 
 
 def can_search(user_id: int) -> bool:
-    """Open to everyone until at least one allowed user exists (.env or /adduser)."""
-    added = db.users()
-    return (not config.ALLOWED_IDS and not added) or user_id in config.ALLOWED_IDS \
-        or user_id in added or is_admin(user_id)
+    """Closed by default: only admins and users added in .env or with /adduser."""
+    return is_admin(user_id) or user_id in config.ALLOWED_IDS or user_id in db.users()
+
+
+def rate_limit_message(user_id: int) -> str | None:
+    """None if the user may search now; admins are exempt."""
+    if is_admin(user_id):
+        return None
+    now = int(time.time())
+    for limit, seconds, label in ((config.SEARCH_LIMIT_HOUR, 3600, "ساعت"),
+                                  (config.SEARCH_LIMIT_DAY, 86400, "روز")):
+        if limit and db.count_searches(user_id, now - seconds) >= limit:
+            return f"⏳ سقف {limit} جستجو در هر {label} پر شده است. بعداً دوباره تلاش کنید."
+    return None
 
 
 async def admin_contacts(bot, cache_store: dict) -> str:
@@ -96,6 +106,7 @@ async def scanner(app: Application):
 
 
 async def post_init(app: Application):
+    await asyncio.to_thread(db.purge_audit, config.AUDIT_DAYS)
     log.info("Bot started as @%s, watching folder %s", app.bot.username, config.DATA_DIR)
     app.bot_data["scanner"] = asyncio.get_running_loop().create_task(scanner(app))
 
@@ -105,7 +116,7 @@ async def post_shutdown(app: Application):
         task.cancel()
 
 
-def format_results(query: str, total: int, results, offset: int) -> str:
+def format_results(query: str, total: int, results, offset: int, cap: int = 0) -> str:
     results = [r[:3] for r in results]
     q = html.escape(query)
     if not total:
@@ -119,6 +130,8 @@ def format_results(query: str, total: int, results, offset: int) -> str:
                 value = value[:MAX_VALUE_LEN] + "…"
             lines.append(f"• <b>{html.escape(key)}:</b> {html.escape(value)}")
         parts.append("\n".join(lines))
+    if cap and total > cap:
+        parts.append(f"⚠️ فقط {cap} نتیجه‌ی اول نمایش داده می‌شود؛ برای نتیجه‌ی دقیق‌تر، کلمات بیشتری بنویسید.")
     text = "\n\n".join(parts)
     return text if len(text) <= 4000 else text[:3990] + "…"
 
@@ -139,9 +152,13 @@ def pager(total: int, offset: int, results=(), admin: bool = False) -> InlineKey
 
 
 async def run_search(query: str, offset: int, admin: bool = False):
-    total, results = await asyncio.to_thread(
-        db.search, query, config.PAGE_SIZE, offset, admin)
-    return format_results(query, total, results, offset), pager(total, offset, results, admin)
+    """Returns (text, markup, total). Non-admins can view at most MAX_RESULTS results."""
+    cap = 0 if admin else config.MAX_RESULTS
+    limit = min(config.PAGE_SIZE, cap - offset) if cap else config.PAGE_SIZE
+    total, results = await asyncio.to_thread(db.search, query, max(limit, 0), offset, admin)
+    shown_total = min(total, cap) if cap else total
+    return (format_results(query, total, results, offset, cap),
+            pager(shown_total, offset, results, admin), total)
 
 
 async def on_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -153,9 +170,14 @@ async def on_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not query.strip():
         await msg.reply_text("عبارت مورد نظر را بنویسید. مثال: علی رضایی")
         return
+    user = update.effective_user
+    if blocked := await asyncio.to_thread(rate_limit_message, user.id):
+        await msg.reply_text(blocked)
+        return
     context.user_data["query"] = query
     context.user_data["offset"] = 0
-    text, markup = await run_search(query, 0, is_admin(update.effective_user.id))
+    text, markup, total = await run_search(query, 0, is_admin(user.id))
+    await asyncio.to_thread(db.log_search, user.id, user.full_name, query, total)
     await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 
@@ -167,7 +189,7 @@ async def on_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await cq.answer()
     offset = context.user_data["offset"] = int(cq.data.split(":")[1])
-    text, markup = await run_search(query, offset, is_admin(cq.from_user.id))
+    text, markup, _ = await run_search(query, offset, is_admin(cq.from_user.id))
     await cq.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 
@@ -208,7 +230,7 @@ async def on_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not query:
         await cq.edit_message_reply_markup(None)
         return
-    text, markup = await run_search(query, offset, True)
+    text, markup, _ = await run_search(query, offset, True)
     await cq.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 
@@ -219,11 +241,13 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = ("سلام! 👋\n"
             "هر کلمه یا عبارتی را بفرستید تا در فایل‌ها جستجو کنم.\n\n"
             "• چند کلمه: ردیف‌هایی که همه کلمات را دارند\n"
-            "• عبارت داخل \"گیومه\": جستجوی دقیق همان عبارت")
+            "• عبارت داخل \"گیومه\": جستجوی دقیق همان عبارت\n\n"
+            "ℹ️ جستجوها ثبت می‌شوند و تعدادشان محدود است.")
     if is_admin(update.effective_user.id):
         text += ("\n\nادمین: فایل‌های CSV و DB را در پوشه‌ی data بگذارید تا خودکار ثبت شوند،"
                  " یا فایل‌های زیر ۲۰ مگابایت را همین‌جا بفرستید.\n/reload — بررسی فوری پوشه\n/files — فهرست فایل‌ها\n"
                  "/adduser ID — افزودن کاربر، /deluser ID — حذف کاربر، /users — فهرست کاربران\n"
+                 "/audit — آخرین جستجوها (یا /audit ID برای یک کاربر)\n"
                  "زیر هر نتیجه‌ی جستجو دکمه‌ی 🗑 هست تا همان ردیف را از ایندکس حذف کنید.")
     await update.effective_message.reply_text(text)
 
@@ -256,8 +280,6 @@ async def on_adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if await asyncio.to_thread(db.add_user, uid):
         text = f"✅ کاربر {uid} اضافه شد."
-        if not config.ALLOWED_IDS and len(db.users()) == 1:
-            text += "\nاز این پس فقط کاربران اضافه‌شده و ادمین‌ها می‌توانند جستجو کنند."
     else:
         text = f"کاربر {uid} از قبل در فهرست است."
     await msg.reply_text(text)
@@ -291,8 +313,25 @@ async def on_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if lines:
         text = "👥 کاربران مجاز:\n" + "\n".join(lines)
     else:
-        text = "👥 فهرست کاربران خالی است؛ همه می‌توانند جستجو کنند."
+        text = "👥 هنوز کاربری اضافه نشده؛ فقط ادمین‌ها می‌توانند جستجو کنند."
     await update.effective_message.reply_text(f"{text}\n\nادمین‌ها: {admins}"[:4000])
+
+
+async def on_audit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/audit [شناسه کاربر] [تعداد] — newest searches first."""
+    if not is_admin(update.effective_user.id):
+        return
+    nums = [int(a) for a in context.args if a.isdigit()]
+    uid = nums[0] if nums and nums[0] > 1000 else None
+    limit = min(next((n for n in nums if n <= 1000), 20), 50)
+    rows = await asyncio.to_thread(db.audit, limit, uid)
+    if not rows:
+        await update.effective_message.reply_text("هنوز جستجویی ثبت نشده است.")
+        return
+    lines = [f"{time.strftime('%m-%d %H:%M', time.localtime(ts))} | {user_id} {html.escape(name or '')}"
+             f" | «{html.escape(query)}» → {total}" for ts, user_id, name, query, total in rows]
+    await update.effective_message.reply_text(
+        "📋 آخرین جستجوها:\n" + "\n".join(lines)[:3900], parse_mode=ParseMode.HTML)
 
 
 async def on_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -355,6 +394,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("adduser", on_adduser, filters=private))
     app.add_handler(CommandHandler("deluser", on_deluser, filters=private))
     app.add_handler(CommandHandler("users", on_users, filters=private))
+    app.add_handler(CommandHandler("audit", on_audit, filters=private))
     app.add_handler(MessageHandler(private & filters.Document.ALL, on_document))
     app.add_handler(MessageHandler(private & filters.TEXT & ~filters.COMMAND, on_search))
     app.add_handler(CallbackQueryHandler(on_page, pattern=r"^page:\d+$"))
@@ -364,7 +404,7 @@ def build_app() -> Application:
 
 def main():
     if not config.ADMIN_IDS:
-        log.warning("ADMIN_IDS is empty: nobody gets file notifications or /reload")
+        log.warning("ADMIN_IDS is empty: nobody can manage users, add files or use /reload")
     try:
         build_app().run_polling(allowed_updates=Update.ALL_TYPES)
     except InvalidToken:
