@@ -12,6 +12,6 @@ The README files already contain the keywords. These settings cannot be committe
 
 **Website** (About): leave empty or link to the docs.
 
-**Social preview** (Settings → General → Social preview): upload a 1280×640 PNG with the project name and one line, in English.
+**Social preview** (Settings → General → Social preview): upload [`docs/social-preview.png`](social-preview.png) (1280×640, already made).
 
 **Other things that help ranking:** a first release (Releases → Draft a new release, tag `v1.0.0`), a few stars from real users, and links to the repo from your channel/blog. Issues/Discussions enabled shows the project is alive.
