@@ -9,7 +9,7 @@ import time
 from contextlib import closing, contextmanager
 from typing import Callable, Iterable
 
-from .text import normalize, tokens
+from .text import CJK, normalize, tokens
 
 SEP = "\x1f"
 BATCH = 20_000
@@ -257,9 +257,15 @@ class Database:
         if len(q) > 2 and q[0] in "\"«" and q[-1] in "\"»":
             words = tokens(q[1:-1])
             return '"' + " ".join(words) + '"' if words else None
-        words = tokens(q)
+        terms, pos = [], 0
+        for m in CJK.finditer(q):  # a run of Chinese/Japanese characters is matched as a phrase
+            terms += [(w, False) for w in tokens(q[pos:m.start()])]
+            terms.append((" ".join(tokens(m.group())), True))
+            pos = m.end()
+        terms += [(w, False) for w in tokens(q[pos:])]
         # Prefix-matching very short words expands to huge term lists; match them exactly.
-        return " ".join(f'"{w}"*' if len(w) >= 3 else f'"{w}"' for w in words) if words else None
+        return " ".join(f'"{w}"' if phrase or len(w) < 3 else f'"{w}"*'
+                        for w, phrase in terms) if terms else None
 
     def delete_row(self, row_id: int) -> bool:
         """Remove one row from the index (the source file is left untouched)."""

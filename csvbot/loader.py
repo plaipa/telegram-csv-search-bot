@@ -4,8 +4,15 @@ import codecs
 import csv
 from typing import Iterator
 
+from charset_normalizer import from_bytes
+
 SAMPLE_SIZE = 1 << 20  # 1 MB
 csv.field_size_limit(1 << 24)
+
+
+# Legacy code pages we accept from charset detection: Persian/Arabic, Cyrillic, Chinese.
+_LEGACY = {"cp1256": "cp1256", "cp1251": "cp1251", "gb18030": "gb18030", "gbk": "gb18030",
+           "gb2312": "gb18030", "big5": "big5", "big5hkscs": "big5"}
 
 
 def detect_encoding(sample: bytes) -> str:
@@ -16,7 +23,11 @@ def detect_encoding(sample: bytes) -> str:
         codecs.getincrementaldecoder("utf-8-sig")().decode(sample, final=False)
         return "utf-8-sig"
     except UnicodeDecodeError:
-        return "cp1256"  # Windows Arabic/Persian (old Excel exports)
+        pass
+    best = from_bytes(sample[:-4] if len(sample) > 4096 else sample).best()  # a cut-off tail skews detection
+    if best and best.encoding.lower().replace("-", "_") in _LEGACY:
+        return _LEGACY[best.encoding.lower().replace("-", "_")]
+    return "cp1256"  # Windows Arabic/Persian (old Excel exports)
 
 
 def detect_dialect(text: str):

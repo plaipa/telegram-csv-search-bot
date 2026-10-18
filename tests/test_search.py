@@ -42,6 +42,20 @@ class SearchTest(unittest.TestCase):
         for q in ("राहुल", "शर्मा", "दिल्ली", "09123456789", "०९१२", "फोन", "फ़ोन", '"राहुल शर्मा"'):
             self.assertEqual(self.db.search(q)[0], 1, q)
 
+    def test_chinese_and_russian(self):
+        self.add("z", "z.csv", "姓名,备注\n王小明,我在北京工作\n李华,Привет мир Москва\n".encode())
+        for q, n in (("北京", 1), ("工作", 1), ("在北京", 1), ("小明", 1), ("北", 1), ("京北", 0),
+                     ("王小明 北京", 1), ("привет", 1), ("МОСК", 1), ("мир москва", 1), ('"我在北京"', 1)):
+            self.assertEqual(self.db.search(q)[0], n, q)
+
+    def test_legacy_encodings(self):
+        cases = [("ru", "имя,город\nИван,Москва\nПётр,Санкт-Петербург\nАнна,Казань\n", "cp1251", "москва"),
+                 ("zh", "姓名,城市\n王小明,北京\n李华,上海\n张伟,广州\n", "gbk", "北京"),
+                 ("tw", "姓名,城市\n王小明,台北\n李華,高雄\n", "big5", "高雄")]
+        for uid, text, enc, word in cases:
+            self.add(uid, uid + ".csv", text.encode(enc))
+            self.assertEqual(self.db.search(word)[0], 1, enc)
+
     def test_users(self):
         self.assertTrue(self.db.add_user(5))
         self.assertFalse(self.db.add_user(5))

@@ -1,20 +1,20 @@
 <div align="center">
 
-**English** · **[فارسی](README.fa.md)** · **[हिन्दी](README.hi.md)**
+**English** · **[فارسی](README.fa.md)** · **[हिन्दी](README.hi.md)** · **[Русский](README.ru.md)** · **[中文](README.zh.md)**
 
 </div>
 
 # Telegram CSV & SQLite Search Bot
 
-> A free, open-source **Telegram bot that searches inside CSV, TSV and SQLite (`.db`) files**. Drop your files in a folder and search them from Telegram, even multi-gigabyte files. Full-text search with **Persian, Arabic, Hindi and English** text support. Runs on macOS, Windows, Linux and Docker.
+> A free, open-source **Telegram bot that searches inside CSV, TSV and SQLite (`.db`) files**. Drop your files in a folder and search them from Telegram, even multi-gigabyte files. Full-text search with **English, Persian, Arabic, Hindi, Russian and Chinese** text support. Runs on macOS, Windows, Linux and Docker.
 
-Keywords: telegram bot, csv search, sqlite search, search csv in telegram, full-text search, FTS5, large csv files, python-telegram-bot, Persian / Farsi / Hindi / Arabic search.
+Keywords: telegram bot, csv search, sqlite search, search csv in telegram, full-text search, FTS5, large csv files, python-telegram-bot, Persian / Farsi / Hindi / Arabic / Russian / Chinese search.
 
 ## Features
 - **Folder watching:** put `.csv`, `.tsv`, `.db`, `.sqlite`, `.sqlite3` files in `data/`. New files are indexed automatically, changed files are re-indexed, deleted files disappear from results.
 - **Huge files:** CSV is streamed, so memory stays around 250 MB even for 3 GB+ files. A 6-million-row CSV indexes in about 2.5 minutes; most searches answer in under 200 ms (SQLite FTS5).
 - **SQLite databases:** every table of every `.db` file is searchable (opened read-only).
-- **Multilingual text:** Persian/Arabic letters (ي/ی, ك/ک), Persian/Arabic/Hindi (Devanagari) digits, Arabic diacritics and the Hindi nukta (फ़ = फ) are normalized, so `०९१२`, `۰۹۱۲` and `0912` all match. Encoding (UTF-8, Windows-1256, UTF-16) and delimiter (`, ; | tab`) are auto-detected.
+- **Multilingual text:** Persian/Arabic letters (ي/ی, ك/ک), Persian/Arabic/Hindi (Devanagari) digits, Arabic diacritics and the Hindi nukta (फ़ = फ) are normalized, so `०९१२`, `۰۹۱۲` and `0912` all match. Chinese is searchable by any part of a phrase (`北京` finds `我在北京工作`). Encoding (UTF-8, UTF-16, GBK, Big5, Windows-1251/1256) and delimiter (`, ; | tab`) are auto-detected.
 - **Search syntax:** several words (all must match), word prefixes (3+ characters), `"exact phrase"`, paging buttons.
 - **Access control:** closed by default; admins add or remove users from the chat (`/adduser`, `/deluser`).
 - **Safety:** per-user search and result limits, an audit log of every search (`/audit`).
@@ -85,7 +85,7 @@ Run `python -m csvbot.check` after any change; it never prints secrets.
 - **Proxy / VPN:** `PROXY=socks5://127.0.0.1:10808`. `python -m csvbot.check` can detect a local proxy automatically.
 
 ## Documentation
-- Full guide in Persian: [README.fa.md](README.fa.md) · Hindi: [README.hi.md](README.hi.md)
+- Full guide in other languages: [فارسی](README.fa.md) · [हिन्दी](README.hi.md) · [Русский](README.ru.md) · [中文](README.zh.md)
 - Run on your own computer: [docs/local.md](docs/local.md) · Free Oracle Cloud server: [docs/oracle-cloud.md](docs/oracle-cloud.md)
 - GitHub repo settings (name, topics, description): [docs/github-seo.md](docs/github-seo.md)
 - Tests: `python -m unittest discover -s tests -v`
