@@ -37,6 +37,11 @@ class SearchTest(unittest.TestCase):
         self.assertEqual(self.db.search("مریم تهران")[0], 0)  # all words required
         self.assertEqual(self.db.search('"مریم کاظمی"')[1][0][1], 2)
 
+    def test_hindi(self):
+        self.add("h", "h.csv", "नाम,शहर,नोट\nराहुल शर्मा,दिल्ली,०९१२३४५६७८९ फ़ोन\n".encode())
+        for q in ("राहुल", "शर्मा", "दिल्ली", "09123456789", "०९१२", "फोन", "फ़ोन", '"राहुल शर्मा"'):
+            self.assertEqual(self.db.search(q)[0], 1, q)
+
     def test_users(self):
         self.assertTrue(self.db.add_user(5))
         self.assertFalse(self.db.add_user(5))

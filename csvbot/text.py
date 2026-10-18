@@ -1,5 +1,5 @@
-"""Normalization of Persian/Arabic text so that searches match regardless of
-keyboard layout (ي/ی, ك/ک), digits (۱۲۳/123) or diacritics."""
+"""Normalization of Persian/Arabic/Hindi text so that searches match regardless of
+keyboard layout (ي/ی, ك/ک), digits (۱۲۳/१२३/123) or diacritics."""
 import re
 
 _MAP = {
@@ -13,6 +13,10 @@ _MAP = {
 for i in range(10):
     _MAP[chr(0x06F0 + i)] = str(i)  # Persian digits
     _MAP[chr(0x0660 + i)] = str(i)  # Arabic digits
+    _MAP[chr(0x0966 + i)] = str(i)  # Devanagari digits (Hindi)
+# Hindi: drop the nukta (फ़ == फ) and fold the precomposed nukta letters U+0958-095F.
+_MAP["\u093c"] = ""
+_MAP.update(zip("\u0958\u0959\u095a\u095b\u095c\u095d\u095e\u095f", "कखगजडढफय"))
 _TABLE = str.maketrans(_MAP)
 _DIACRITICS = re.compile(r"[ً-ٰٟـ]")  # harakat + tatweel
 _TOKEN = re.compile(r"\w+")
