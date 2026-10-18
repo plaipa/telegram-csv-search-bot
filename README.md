@@ -4,6 +4,8 @@
 
 </div>
 
+<p align="center"><img src="docs/social-preview.png" alt="Telegram CSV & SQLite Search Bot" width="720"></p>
+
 # Telegram CSV & SQLite Search Bot
 
 > A free, open-source **Telegram bot that searches inside CSV, TSV and SQLite (`.db`) files**. Drop your files in a folder and search them from Telegram, even multi-gigabyte files. Full-text search with **English, Persian, Arabic, Hindi, Russian and Chinese** text support. Runs on macOS, Windows, Linux and Docker.

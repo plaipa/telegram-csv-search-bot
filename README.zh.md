@@ -4,6 +4,8 @@
 
 </div>
 
+<p align="center"><img src="docs/social-preview.png" alt="Telegram CSV 与 SQLite 搜索机器人" width="720"></p>
+
 # Telegram CSV 与 SQLite 搜索机器人
 
 > 免费开源的 **Telegram 机器人，可在 CSV、TSV 和 SQLite（`.db`）文件内搜索**。把文件放进文件夹，就能直接在 Telegram 里搜索，几个 GB 的大文件也没问题。支持**中文、英语、波斯语、印地语和俄语**的全文搜索。可运行于 macOS、Windows、Linux 和 Docker。
