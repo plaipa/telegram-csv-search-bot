@@ -76,10 +76,13 @@ Run `python -m csvbot.check` after any change; it never prints secrets.
 | `/start` | Help; users without access see how to contact the admin | everyone |
 | `/files` | List indexed files | admin |
 | `/reload` | Scan the folder now | admin |
-| `/adduser ID`, `/deluser ID`, `/users` | Manage allowed users | admin |
+| `/users` | List allowed users, with a ❌ button to remove each | admin |
+| `/adduser ID`, `/deluser ID` | Add or remove a user by numeric id | admin |
 | `/audit [ID]` | Recent searches (who, when, what) | admin |
 | 🗑 button under results | Delete the row from the index, or from the source file too (irreversible) | admin |
 | send a file | Add a CSV/DB under 20 MB | admin |
+
+> **Easiest way to add a user:** the person sends `/start` to the bot and taps **📩 Request access**. Every admin gets a message with **✅ Approve / ❌ Reject** buttons, and the user is told the result. No ids to copy.
 
 ## Change the bot token or the Telegram API server
 - **Token:** in BotFather send `/revoke` (same bot) or `/newbot`, put the new value in `BOT_TOKEN` in `.env`, run `python -m csvbot.check`, restart. Run only one instance per token.

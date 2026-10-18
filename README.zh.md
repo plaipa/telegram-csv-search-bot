@@ -76,10 +76,13 @@ Windows 请使用 `py -m venv .venv`、`.venv\Scripts\pip` 和 `.venv\Scripts\py
 | `/start` | 帮助；没有权限的用户会看到如何联系管理员 | 所有人 |
 | `/files` | 已索引文件列表 | 管理员 |
 | `/reload` | 立即扫描文件夹 | 管理员 |
-| `/adduser ID`、`/deluser ID`、`/users` | 管理允许的用户 | 管理员 |
+| `/users` | 允许用户列表，每人旁边有 ❌ 删除按钮 | 管理员 |
+| `/adduser ID`、`/deluser ID` | 按数字 id 添加或删除用户 | 管理员 |
 | `/audit [ID]` | 最近的搜索（谁、何时、搜了什么） | 管理员 |
 | 结果下方的 🗑 按钮 | 从索引中删除该行，或同时从原始文件中删除（不可恢复） | 管理员 |
 | 发送文件 | 添加小于 20 MB 的 CSV/DB | 管理员 |
+
+> **添加用户最简单的方式：** 对方给机器人发送 `/start`，点击 **📩 申请权限**。每位管理员会收到带有 **✅ 同意 / ❌ 拒绝** 按钮的消息，并会通知申请人结果，无需复制 id。
 
 ## 更换令牌或 Telegram API 服务器
 - **令牌：** 在 BotFather 中发送 `/revoke`（同一个机器人）或 `/newbot`，把新令牌填入 `.env` 的 `BOT_TOKEN`，运行 `python -m csvbot.check`，然后重启机器人。一个令牌只能运行一个实例。

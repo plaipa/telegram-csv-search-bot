@@ -71,9 +71,69 @@ async def admin_contacts(bot, cache_store: dict) -> str:
 async def deny(update: Update, context: ContextTypes.DEFAULT_TYPE):
     contacts = await admin_contacts(context.bot, context.bot_data) if config.ADMIN_IDS else ""
     text = "⛔️ شما به این ربات دسترسی ندارید."
+    markup = None
     if contacts:
-        text += f"\nبرای دریافت دسترسی با ادمین صحبت کنید و شناسه‌ی عددی خود ({update.effective_user.id}) را برایش بفرستید:\n{contacts}"
-    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML)
+        text += f"\nبا ادمین صحبت کنید: {contacts}\nیا دکمه‌ی زیر را بزنید تا درخواست شما برای ادمین فرستاده شود."
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("📩 درخواست دسترسی", callback_data="acc:req")]])
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+
+
+REQUEST_COOLDOWN = 3600  # seconds between access requests from the same user
+
+
+async def on_access_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """A user without access presses the button; every admin gets approve/reject buttons."""
+    cq, user = update.callback_query, update.callback_query.from_user
+    if can_search(user.id):
+        await cq.answer("شما دسترسی دارید. یک کلمه بفرستید تا جستجو کنم.", show_alert=True)
+        return
+    sent = context.bot_data.setdefault("access_requests", {})
+    if time.time() - sent.get(user.id, 0) < REQUEST_COOLDOWN:
+        await cq.answer("درخواست شما قبلاً فرستاده شده؛ منتظر تأیید ادمین بمانید.", show_alert=True)
+        return
+    sent[user.id] = time.time()
+    handle = f"@{user.username}" if user.username else "—"
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ تأیید", callback_data=f"accok:{user.id}"),
+        InlineKeyboardButton("❌ رد", callback_data=f"accno:{user.id}")]])
+    text = (f"📩 درخواست دسترسی\nنام: {html.escape(user.full_name)}\n"
+            f"یوزرنیم: {handle}\nشناسه: <code>{user.id}</code>")
+    for admin in config.ADMIN_IDS:
+        try:
+            await context.bot.send_message(admin, text, parse_mode=ParseMode.HTML, reply_markup=markup)
+        except Exception:
+            log.warning("Could not send access request to admin %s", admin)
+    await cq.answer("✅ درخواست برای ادمین فرستاده شد.", show_alert=True)
+
+
+async def on_access_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin presses ✅/❌ under an access request."""
+    cq = update.callback_query
+    if not is_admin(cq.from_user.id):
+        await cq.answer("⛔️ فقط ادمین.", show_alert=True)
+        return
+    action, uid = cq.data.split(":")
+    uid = int(uid)
+    base = cq.message.text_html if cq.message else ""
+    if action == "accok":
+        await asyncio.to_thread(db.add_user, uid, _name_from_request(cq.message.text))
+        verdict, note = "✅ تأیید شد", "✅ دسترسی شما تأیید شد. هر کلمه‌ای بفرستید تا جستجو کنم."
+    else:
+        verdict, note = "❌ رد شد", "❌ درخواست دسترسی شما رد شد."
+    await cq.answer(verdict)
+    await cq.edit_message_text(f"{base}\n\n{verdict} ({html.escape(cq.from_user.full_name)})",
+                               parse_mode=ParseMode.HTML)
+    try:
+        await context.bot.send_message(uid, note)
+    except Exception:
+        log.warning("Could not notify user %s", uid)
+
+
+def _name_from_request(text: str) -> str:
+    for line in (text or "").splitlines():
+        if line.startswith("نام:"):
+            return line[4:].strip()
+    return ""
 
 
 async def notify_admins(bot, text: str):
@@ -246,7 +306,7 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_admin(update.effective_user.id):
         text += ("\n\nادمین: فایل‌های CSV و DB را در پوشه‌ی data بگذارید تا خودکار ثبت شوند،"
                  " یا فایل‌های زیر ۲۰ مگابایت را همین‌جا بفرستید.\n/reload — بررسی فوری پوشه\n/files — فهرست فایل‌ها\n"
-                 "/adduser ID — افزودن کاربر، /deluser ID — حذف کاربر، /users — فهرست کاربران\n"
+                 "/users — فهرست کاربران با دکمه‌ی حذف (درخواست‌های دسترسی هم همین‌جا برایتان می‌آید)\n"
                  "/audit — آخرین جستجوها (یا /audit ID برای یک کاربر)\n"
                  "زیر هر نتیجه‌ی جستجو دکمه‌ی 🗑 هست تا همان ردیف را از ایندکس حذف کنید.")
     await update.effective_message.reply_text(text)
@@ -307,14 +367,34 @@ async def on_deluser(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def on_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
-    added = await asyncio.to_thread(db.users)
-    lines = [f"• {u}" for u in added] + [f"• {u} (از .env)" for u in config.ALLOWED_IDS if u not in added]
-    admins = ", ".join(map(str, config.ADMIN_IDS)) or "—"
-    if lines:
-        text = "👥 کاربران مجاز:\n" + "\n".join(lines)
-    else:
-        text = "👥 هنوز کاربری اضافه نشده؛ فقط ادمین‌ها می‌توانند جستجو کنند."
-    await update.effective_message.reply_text(f"{text}\n\nادمین‌ها: {admins}"[:4000])
+    text, markup = await asyncio.to_thread(users_panel)
+    await update.effective_message.reply_text(text, reply_markup=markup)
+
+
+def users_panel() -> tuple[str, InlineKeyboardMarkup | None]:
+    """The /users message: one ❌ button per removable user."""
+    added = db.users_named()
+    ids = {u for u, _ in added}
+    lines = [f"• {u} {name}".rstrip() for u, name in added]
+    lines += [f"• {u} (از .env)" for u in sorted(config.ALLOWED_IDS) if u not in ids]
+    admins = ", ".join(map(str, sorted(config.ADMIN_IDS))) or "—"
+    text = ("👥 کاربران مجاز:\n" + "\n".join(lines)) if lines else \
+        "👥 هنوز کاربری اضافه نشده؛ فقط ادمین‌ها می‌توانند جستجو کنند."
+    text += ("\n\nبرای حذف، دکمه‌ی ❌ را بزنید. برای افزودن، کاربر در ربات /start را بزند و «درخواست دسترسی» را انتخاب کند،"
+             f" یا بنویسید /adduser شناسه\n\nادمین‌ها: {admins}")
+    buttons = [[InlineKeyboardButton(f"❌ {name or u}"[:40], callback_data=f"rm:{u}")] for u, name in added]
+    return text[:4000], InlineKeyboardMarkup(buttons) if buttons else None
+
+
+async def on_remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cq = update.callback_query
+    if not is_admin(cq.from_user.id):
+        await cq.answer("⛔️ فقط ادمین.", show_alert=True)
+        return
+    removed = await asyncio.to_thread(db.remove_user, int(cq.data.split(":")[1]))
+    await cq.answer("🗑 حذف شد." if removed else "قبلاً حذف شده بود.")
+    text, markup = await asyncio.to_thread(users_panel)
+    await cq.edit_message_text(text, reply_markup=markup)
 
 
 async def on_audit(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -397,6 +477,9 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("audit", on_audit, filters=private))
     app.add_handler(MessageHandler(private & filters.Document.ALL, on_document))
     app.add_handler(MessageHandler(private & filters.TEXT & ~filters.COMMAND, on_search))
+    app.add_handler(CallbackQueryHandler(on_access_request, pattern=r"^acc:req$"))
+    app.add_handler(CallbackQueryHandler(on_access_decision, pattern=r"^acc(ok|no):\d+$"))
+    app.add_handler(CallbackQueryHandler(on_remove_user, pattern=r"^rm:\d+$"))
     app.add_handler(CallbackQueryHandler(on_page, pattern=r"^page:\d+$"))
     app.add_handler(CallbackQueryHandler(on_delete, pattern=r"^(del|delok|delsrc|delno):\d+$"))
     return app

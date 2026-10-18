@@ -78,6 +78,8 @@ class Database:
         with closing(self._connect()) as con:
             con.execute("PRAGMA journal_mode=WAL")
             con.executescript(SCHEMA)
+            if "name" not in [r[1] for r in con.execute("PRAGMA table_info(users)")]:
+                con.execute("ALTER TABLE users ADD COLUMN name TEXT")  # databases from before names were stored
         with writer_lock(path, wait=False) as locked:
             if locked:  # otherwise another process is indexing right now
                 self._cleanup_incomplete()
@@ -183,14 +185,19 @@ class Database:
             con.execute("DELETE FROM purged WHERE file_id = ?", (file_id,))
             return True
 
-    def add_user(self, user_id: int) -> bool:
+    def add_user(self, user_id: int, name: str = "") -> bool:
         with closing(self._connect()) as con, con:
-            return con.execute("INSERT OR IGNORE INTO users VALUES (?, ?)",
-                               (user_id, int(time.time()))).rowcount > 0
+            return con.execute("INSERT OR IGNORE INTO users (user_id, added_at, name) VALUES (?, ?, ?)",
+                               (user_id, int(time.time()), name)).rowcount > 0
 
     def remove_user(self, user_id: int) -> bool:
         with closing(self._connect()) as con, con:
             return con.execute("DELETE FROM users WHERE user_id = ?", (user_id,)).rowcount > 0
+
+    def users_named(self) -> list[tuple[int, str]]:
+        with closing(self._connect()) as con:
+            return [(r[0], r[1] or "") for r in con.execute(
+                "SELECT user_id, name FROM users ORDER BY added_at")]
 
     def users(self) -> list[int]:
         with closing(self._connect()) as con:
