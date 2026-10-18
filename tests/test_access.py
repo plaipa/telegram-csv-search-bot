@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock
 
-from csvbot import bot, config
+from csvbot import bot, config, i18n
 from csvbot.db import Database
 
 
@@ -14,6 +14,7 @@ class AccessFlowTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.old = (bot.db, config.ADMIN_IDS, config.ALLOWED_IDS)
         bot.db = Database(os.path.join(self.tmp.name, "i.db"))
+        i18n.set_language("en")
         config.ADMIN_IDS, config.ALLOWED_IDS = {1}, {3}
         self.sent = []
         self.ctx = NS(bot=NS(send_message=AsyncMock(side_effect=self.record), get_chat=AsyncMock()),
@@ -21,6 +22,7 @@ class AccessFlowTest(unittest.TestCase):
 
     def tearDown(self):
         bot.db, config.ADMIN_IDS, config.ALLOWED_IDS = self.old
+        i18n.set_language(i18n.DEFAULT)
         self.tmp.cleanup()
 
     async def record(self, chat, text, **kw):
@@ -70,10 +72,41 @@ class AccessFlowTest(unittest.TestCase):
         self.assertFalse(bot.can_search(9))
 
     def test_reject(self):
-        upd, _, _ = self.callback(1, "accno:9", "نام: X")
+        upd, _, _ = self.callback(1, "accno:9", "📩 Access request\n👤 X")
         asyncio.run(bot.on_access_decision(upd, self.ctx))
         self.assertFalse(bot.can_search(9))
-        self.assertIn("رد", self.sent[-1][1])
+        self.assertIn("rejected", self.sent[-1][1])
+
+    def test_first_start_asks_admin_for_language(self):
+        replies = []
+
+        async def reply(text, **kw):
+            replies.append((text, kw.get("reply_markup")))
+
+        def start(uid):
+            upd = NS(effective_user=NS(id=uid), effective_message=NS(reply_text=reply))
+            asyncio.run(bot.on_start(upd, self.ctx))
+            return replies[-1]
+        # a stranger sees the no-access message (English until an admin chooses)
+        self.assertIn("don't have access", start(9)[0])
+        # the admin is asked first, with one button per language
+        text, markup = start(1)
+        self.assertIn("🌐", text)
+        self.assertEqual([b.callback_data for b in markup.inline_keyboard[0]],
+                         ["lang:en", "lang:fa", "lang:hi", "lang:ru", "lang:zh"])
+        # a non-admin cannot choose
+        upd, _, _ = self.callback(9, "lang:fa")
+        asyncio.run(bot.on_language_chosen(upd, self.ctx))
+        self.assertIsNone(bot.db.get_setting("language"))
+        # the admin picks Persian: it is saved and used everywhere
+        upd, edits, _ = self.callback(1, "lang:fa")
+        upd.callback_query.message.reply_text = reply
+        asyncio.run(bot.on_language_chosen(upd, self.ctx))
+        self.assertEqual(bot.db.get_setting("language"), "fa")
+        self.assertIn("فارسی", edits[-1][0])
+        self.assertIn("/language", replies[-1][0])
+        self.assertIn("دسترسی ندارید", start(9)[0])
+        self.assertIn("سلام", start(1)[0])
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock
 
-from csvbot import bot, config
+from csvbot import bot, config, i18n
 from csvbot.db import Database
 
 
@@ -16,6 +16,7 @@ class LimitsTest(unittest.TestCase):
                     config.SEARCH_LIMIT_DAY, config.MAX_RESULTS)
         bot.db = Database(os.path.join(self.tmp.name, "i.db"))
         config.ADMIN_IDS, config.ALLOWED_IDS = {1}, set()
+        i18n.set_language("fa")
         config.SEARCH_LIMIT_HOUR, config.SEARCH_LIMIT_DAY, config.MAX_RESULTS = 3, 0, 4
         path = os.path.join(self.tmp.name, "a.csv")
         with open(path, "w") as f:
@@ -25,6 +26,7 @@ class LimitsTest(unittest.TestCase):
     def tearDown(self):
         (bot.db, config.ADMIN_IDS, config.ALLOWED_IDS, config.SEARCH_LIMIT_HOUR,
          config.SEARCH_LIMIT_DAY, config.MAX_RESULTS) = self.old
+        i18n.set_language(i18n.DEFAULT)
         self.tmp.cleanup()
 
     def search(self, uid, text="item"):

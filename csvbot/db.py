@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS files (
     done INTEGER NOT NULL DEFAULT 0,
     added_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, added_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, user_id INTEGER NOT NULL,
@@ -184,6 +185,16 @@ class Database:
             con.execute("DELETE FROM files WHERE id = ?", (file_id,))
             con.execute("DELETE FROM purged WHERE file_id = ?", (file_id,))
             return True
+
+    def get_setting(self, key: str) -> str | None:
+        with closing(self._connect()) as con:
+            row = con.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_setting(self, key: str, value: str):
+        with closing(self._connect()) as con, con:
+            con.execute("INSERT INTO settings VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (key, value))
 
     def add_user(self, user_id: int, name: str = "") -> bool:
         with closing(self._connect()) as con, con:

@@ -78,6 +78,7 @@ Run `python -m csvbot.check` after any change; it never prints secrets.
 | `/reload` | Scan the folder now | admin |
 | `/users` | List allowed users, with a ❌ button to remove each | admin |
 | `/adduser ID`, `/deluser ID` | Add or remove a user by numeric id | admin |
+| `/language` | Change the bot's language (English, فارسی, हिन्दी, Русский, 中文). On first start the bot asks the admin to pick one | admin |
 | `/audit [ID]` | Recent searches (who, when, what) | admin |
 | 🗑 button under results | Delete the row from the index, or from the source file too (irreversible) | admin |
 | send a file | Add a CSV/DB under 20 MB | admin |

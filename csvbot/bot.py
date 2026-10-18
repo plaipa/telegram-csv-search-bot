@@ -15,8 +15,9 @@ from telegram.error import InvalidToken, NetworkError
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, filters)
 
-from . import config
+from . import config, i18n
 from .db import Database
+from .i18n import LANGS, t
 from .purge import PurgeError, delete_source_row
 from .sources import CSV_EXT, DB_EXT, FolderIndex
 
@@ -28,6 +29,7 @@ log = logging.getLogger("csvbot")
 MAX_VALUE_LEN = 300
 MAX_UPLOAD = 20 * 1024 * 1024  # Bot API download limit
 db = Database(config.DB_PATH)
+i18n.set_language(db.get_setting("language") or i18n.DEFAULT)
 folder = FolderIndex(db, config.DATA_DIR)
 scan_lock = asyncio.Lock()
 
@@ -46,35 +48,35 @@ def rate_limit_message(user_id: int) -> str | None:
     if is_admin(user_id):
         return None
     now = int(time.time())
-    for limit, seconds, label in ((config.SEARCH_LIMIT_HOUR, 3600, "ساعت"),
-                                  (config.SEARCH_LIMIT_DAY, 86400, "روز")):
+    for limit, seconds, key in ((config.SEARCH_LIMIT_HOUR, 3600, "rate_hour"),
+                                (config.SEARCH_LIMIT_DAY, 86400, "rate_day")):
         if limit and db.count_searches(user_id, now - seconds) >= limit:
-            return f"⏳ سقف {limit} جستجو در هر {label} پر شده است. بعداً دوباره تلاش کنید."
+            return t(key, limit=limit)
     return None
 
 
 async def admin_contacts(bot, cache_store: dict) -> str:
     """@usernames of the admins (looked up once); falls back to a profile link."""
-    cache = cache_store.get("admin_contacts")
-    if cache is None:
-        parts = []
-        for admin in config.ADMIN_IDS:
+    usernames = cache_store.get("admin_usernames")
+    if usernames is None:
+        usernames = {}
+        for admin in sorted(config.ADMIN_IDS):
             try:
-                username = (await bot.get_chat(admin)).username
+                usernames[admin] = (await bot.get_chat(admin)).username
             except Exception:
-                username = None
-            parts.append(f"@{username}" if username else f'<a href="tg://user?id={admin}">ادمین</a>')
-        cache = cache_store["admin_contacts"] = "، ".join(parts)
-    return cache
+                usernames[admin] = None
+        cache_store["admin_usernames"] = usernames
+    return ", ".join(f"@{name}" if name else f'<a href="tg://user?id={admin}">{t("admin_link")}</a>'
+                     for admin, name in usernames.items())
 
 
 async def deny(update: Update, context: ContextTypes.DEFAULT_TYPE):
     contacts = await admin_contacts(context.bot, context.bot_data) if config.ADMIN_IDS else ""
-    text = "⛔️ شما به این ربات دسترسی ندارید."
+    text = t("no_access")
     markup = None
     if contacts:
-        text += f"\nبا ادمین صحبت کنید: {contacts}\nیا دکمه‌ی زیر را بزنید تا درخواست شما برای ادمین فرستاده شود."
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton("📩 درخواست دسترسی", callback_data="acc:req")]])
+        text += t("no_access_contact", contacts=contacts)
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton(t("btn_request"), callback_data="acc:req")]])
     await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 
@@ -85,41 +87,40 @@ async def on_access_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """A user without access presses the button; every admin gets approve/reject buttons."""
     cq, user = update.callback_query, update.callback_query.from_user
     if can_search(user.id):
-        await cq.answer("شما دسترسی دارید. یک کلمه بفرستید تا جستجو کنم.", show_alert=True)
+        await cq.answer(t("already_access"), show_alert=True)
         return
     sent = context.bot_data.setdefault("access_requests", {})
     if time.time() - sent.get(user.id, 0) < REQUEST_COOLDOWN:
-        await cq.answer("درخواست شما قبلاً فرستاده شده؛ منتظر تأیید ادمین بمانید.", show_alert=True)
+        await cq.answer(t("request_already"), show_alert=True)
         return
     sent[user.id] = time.time()
     handle = f"@{user.username}" if user.username else "—"
     markup = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ تأیید", callback_data=f"accok:{user.id}"),
-        InlineKeyboardButton("❌ رد", callback_data=f"accno:{user.id}")]])
-    text = (f"📩 درخواست دسترسی\nنام: {html.escape(user.full_name)}\n"
-            f"یوزرنیم: {handle}\nشناسه: <code>{user.id}</code>")
+        InlineKeyboardButton(t("btn_approve"), callback_data=f"accok:{user.id}"),
+        InlineKeyboardButton(t("btn_reject"), callback_data=f"accno:{user.id}")]])
+    text = t("request_text", name=html.escape(user.full_name), handle=handle, id=user.id)
     for admin in config.ADMIN_IDS:
         try:
             await context.bot.send_message(admin, text, parse_mode=ParseMode.HTML, reply_markup=markup)
         except Exception:
             log.warning("Could not send access request to admin %s", admin)
-    await cq.answer("✅ درخواست برای ادمین فرستاده شد.", show_alert=True)
+    await cq.answer(t("request_sent"), show_alert=True)
 
 
 async def on_access_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin presses ✅/❌ under an access request."""
     cq = update.callback_query
     if not is_admin(cq.from_user.id):
-        await cq.answer("⛔️ فقط ادمین.", show_alert=True)
+        await cq.answer(t("admins_only"), show_alert=True)
         return
     action, uid = cq.data.split(":")
     uid = int(uid)
     base = cq.message.text_html if cq.message else ""
     if action == "accok":
         await asyncio.to_thread(db.add_user, uid, _name_from_request(cq.message.text))
-        verdict, note = "✅ تأیید شد", "✅ دسترسی شما تأیید شد. هر کلمه‌ای بفرستید تا جستجو کنم."
+        verdict, note = t("verdict_ok"), t("note_ok")
     else:
-        verdict, note = "❌ رد شد", "❌ درخواست دسترسی شما رد شد."
+        verdict, note = t("verdict_no"), t("note_no")
     await cq.answer(verdict)
     await cq.edit_message_text(f"{base}\n\n{verdict} ({html.escape(cq.from_user.full_name)})",
                                parse_mode=ParseMode.HTML)
@@ -131,8 +132,8 @@ async def on_access_decision(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 def _name_from_request(text: str) -> str:
     for line in (text or "").splitlines():
-        if line.startswith("نام:"):
-            return line[4:].strip()
+        if line.startswith("👤 "):  # the name line of the request message
+            return line[2:].strip()
     return ""
 
 
@@ -150,7 +151,7 @@ async def run_scan(app: Application) -> dict:
 
     def on_indexed(name: str, count: int):
         asyncio.run_coroutine_threadsafe(
-            notify_admins(app.bot, f"✅ «{name}» با {count:,} ردیف ثبت شد."), loop)
+            notify_admins(app.bot, t("indexed", name=name, count=count)), loop)
 
     async with scan_lock:
         return await asyncio.to_thread(folder.sync, on_indexed)
@@ -168,6 +169,12 @@ async def scanner(app: Application):
 async def post_init(app: Application):
     await asyncio.to_thread(db.purge_audit, config.AUDIT_DAYS)
     log.info("Bot started as @%s, watching folder %s", app.bot.username, config.DATA_DIR)
+    if not await asyncio.to_thread(db.get_setting, "language"):
+        for admin in config.ADMIN_IDS:  # first run: ask which language the bot should use
+            try:
+                await app.bot.send_message(admin, t("lang_prompt"), reply_markup=language_markup())
+            except Exception:
+                log.info("Could not ask admin %s for the language yet; they will be asked on /start", admin)
     app.bot_data["scanner"] = asyncio.get_running_loop().create_task(scanner(app))
 
 
@@ -180,18 +187,18 @@ def format_results(query: str, total: int, results, offset: int, cap: int = 0) -
     results = [r[:3] for r in results]
     q = html.escape(query)
     if not total:
-        return f"🔍 نتیجه‌ای برای «{q}» پیدا نشد."
+        return t("no_results", q=q)
     shown = f"{total - 1}+" if total > 1000 else str(total)
-    parts = [f"🔍 <b>{shown}</b> نتیجه برای «{q}» (نمایش {offset + 1} تا {offset + len(results)})"]
+    parts = [t("results_header", shown=shown, q=q, a=offset + 1, b=offset + len(results))]
     for i, (name, row_num, fields) in enumerate(results, offset + 1):
-        lines = [f"<b>{i}.</b> 📄 <code>{html.escape(name)}</code> — ردیف {row_num:,}"]
+        lines = [t("result_line", i=i, name=html.escape(name), row=row_num)]
         for key, value in fields.items():
             if len(value) > MAX_VALUE_LEN:
                 value = value[:MAX_VALUE_LEN] + "…"
             lines.append(f"• <b>{html.escape(key)}:</b> {html.escape(value)}")
         parts.append("\n".join(lines))
     if cap and total > cap:
-        parts.append(f"⚠️ فقط {cap} نتیجه‌ی اول نمایش داده می‌شود؛ برای نتیجه‌ی دقیق‌تر، کلمات بیشتری بنویسید.")
+        parts.append(t("cap_note", cap=cap))
     text = "\n\n".join(parts)
     return text if len(text) <= 4000 else text[:3990] + "…"
 
@@ -203,9 +210,9 @@ def pager(total: int, offset: int, results=(), admin: bool = False) -> InlineKey
         rows.append([InlineKeyboardButton(f"🗑 {i}", callback_data=f"del:{r[3]}")
                      for i, r in enumerate(results, offset + 1)])
     if offset > 0:
-        buttons.append(InlineKeyboardButton("« قبلی", callback_data=f"page:{max(offset - size, 0)}"))
+        buttons.append(InlineKeyboardButton(t("btn_prev"), callback_data=f"page:{max(offset - size, 0)}"))
     if offset + size < total:
-        buttons.append(InlineKeyboardButton("بعدی »", callback_data=f"page:{offset + size}"))
+        buttons.append(InlineKeyboardButton(t("btn_next"), callback_data=f"page:{offset + size}"))
     if buttons:
         rows.append(buttons)
     return InlineKeyboardMarkup(rows) if rows else None
@@ -228,7 +235,7 @@ async def on_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     query = " ".join(context.args) if context.args is not None else msg.text
     if not query.strip():
-        await msg.reply_text("عبارت مورد نظر را بنویسید. مثال: علی رضایی")
+        await msg.reply_text(t("enter_query"))
         return
     user = update.effective_user
     if blocked := await asyncio.to_thread(rate_limit_message, user.id):
@@ -245,7 +252,7 @@ async def on_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cq = update.callback_query
     query = context.user_data.get("query")
     if not query or not can_search(cq.from_user.id):
-        await cq.answer("جستجو منقضی شده، دوباره جستجو کنید.")
+        await cq.answer(t("search_expired"))
         return
     await cq.answer()
     offset = context.user_data["offset"] = int(cq.data.split(":")[1])
@@ -257,7 +264,7 @@ async def on_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin-only: remove one result row from the index (asks to confirm first)."""
     cq = update.callback_query
     if not is_admin(cq.from_user.id):
-        await cq.answer("⛔️ فقط ادمین می‌تواند حذف کند.", show_alert=True)
+        await cq.answer(t("admins_only"), show_alert=True)
         return
     action, row_id = cq.data.split(":")
     query = context.user_data.get("query")
@@ -265,13 +272,13 @@ async def on_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "del":
         await cq.answer()
         markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ حذف از ایندکس (فایل اصلی می‌ماند)", callback_data=f"delok:{row_id}")],
-            [InlineKeyboardButton("⚠️ حذف از ایندکس و از فایل اصلی (برگشت‌ناپذیر)", callback_data=f"delsrc:{row_id}")],
-            [InlineKeyboardButton("❌ انصراف", callback_data="delno:0")]])
+            [InlineKeyboardButton(t("btn_del_index"), callback_data=f"delok:{row_id}")],
+            [InlineKeyboardButton(t("btn_del_source"), callback_data=f"delsrc:{row_id}")],
+            [InlineKeyboardButton(t("btn_cancel"), callback_data="delno:0")]])
         await cq.edit_message_reply_markup(markup)
         return
     if action == "delsrc":
-        await cq.answer("⏳ در حال حذف از فایل اصلی...")
+        await cq.answer(t("deleting_source"))
         try:
             async with scan_lock:  # no folder scan while the file is rewritten
                 name = await asyncio.to_thread(delete_source_row, db, config.DATA_DIR, int(row_id))
@@ -280,11 +287,11 @@ async def on_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await cq.message.reply_text(f"❌ {e}")
         except Exception:
             log.exception("Deleting row %s from source failed", row_id)
-            await cq.message.reply_text("❌ حذف از فایل اصلی انجام نشد (جزئیات در لاگ).")
+            await cq.message.reply_text(t("delete_failed"))
     elif action == "delok":
         ok = await asyncio.to_thread(db.delete_row, int(row_id))
         log.info("Admin %s deleted row %s (%s)", cq.from_user.id, row_id, "ok" if ok else "missing")
-        await cq.answer("🗑 حذف شد." if ok else "این ردیف قبلاً حذف شده بود.")
+        await cq.answer(t("deleted") if ok else t("already_deleted"))
     else:
         await cq.answer()
     if not query:
@@ -294,22 +301,44 @@ async def on_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await cq.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 
+def language_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton(name, callback_data=f"lang:{code}")
+                                  for code, name in LANGS.items()]])
+
+
+def start_text(admin: bool) -> str:
+    return t("start") + (t("start_admin") if admin else "")
+
+
 async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not can_search(update.effective_user.id):
+    user_id = update.effective_user.id
+    if is_admin(user_id) and not db.get_setting("language"):
+        # first run: the admin chooses the language of the bot
+        await update.effective_message.reply_text(t("lang_prompt"), reply_markup=language_markup())
+        return
+    if not can_search(user_id):
         await deny(update, context)
         return
-    text = ("سلام! 👋\n"
-            "هر کلمه یا عبارتی را بفرستید تا در فایل‌ها جستجو کنم.\n\n"
-            "• چند کلمه: ردیف‌هایی که همه کلمات را دارند\n"
-            "• عبارت داخل \"گیومه\": جستجوی دقیق همان عبارت\n\n"
-            "ℹ️ جستجوها ثبت می‌شوند و تعدادشان محدود است.")
+    await update.effective_message.reply_text(start_text(is_admin(user_id)))
+
+
+async def on_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/language: an admin changes the language of the whole bot."""
     if is_admin(update.effective_user.id):
-        text += ("\n\nادمین: فایل‌های CSV و DB را در پوشه‌ی data بگذارید تا خودکار ثبت شوند،"
-                 " یا فایل‌های زیر ۲۰ مگابایت را همین‌جا بفرستید.\n/reload — بررسی فوری پوشه\n/files — فهرست فایل‌ها\n"
-                 "/users — فهرست کاربران با دکمه‌ی حذف (درخواست‌های دسترسی هم همین‌جا برایتان می‌آید)\n"
-                 "/audit — آخرین جستجوها (یا /audit ID برای یک کاربر)\n"
-                 "زیر هر نتیجه‌ی جستجو دکمه‌ی 🗑 هست تا همان ردیف را از ایندکس حذف کنید.")
-    await update.effective_message.reply_text(text)
+        await update.effective_message.reply_text(t("lang_prompt"), reply_markup=language_markup())
+
+
+async def on_language_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cq = update.callback_query
+    if not is_admin(cq.from_user.id):
+        await cq.answer(t("admins_only"), show_alert=True)
+        return
+    code = cq.data.split(":")[1]
+    await asyncio.to_thread(db.set_setting, "language", code)
+    i18n.set_language(code)
+    await cq.answer()
+    await cq.edit_message_text(t("lang_saved"))
+    await cq.message.reply_text(start_text(True))
 
 
 async def on_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -317,10 +346,10 @@ async def on_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     files = db.list_files()
     if not files:
-        await update.effective_message.reply_text("هنوز فایلی ثبت نشده است.")
+        await update.effective_message.reply_text(t("no_files"))
         return
-    lines = [f"• {name} — {count:,} ردیف" for _, name, count in files]
-    text = "📚 فایل‌های ثبت‌شده:\n" + "\n".join(lines)
+    lines = [t("file_line", name=name, count=count) for _, name, count in files]
+    text = t("files_header") + "\n" + "\n".join(lines)
     await update.effective_message.reply_text(text[:4000])
 
 
@@ -335,13 +364,12 @@ async def on_adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     uid = _user_id_arg(context)
     if uid is None:
-        await msg.reply_text("شناسه‌ی عددی کاربر را بنویسید. مثال: /adduser 123456789\n"
-                             "(کاربر می‌تواند شناسه‌اش را از @userinfobot بگیرد.)")
+        await msg.reply_text(t("adduser_usage"))
         return
     if await asyncio.to_thread(db.add_user, uid):
-        text = f"✅ کاربر {uid} اضافه شد."
+        text = t("user_added", uid=uid)
     else:
-        text = f"کاربر {uid} از قبل در فهرست است."
+        text = t("user_exists", uid=uid)
     await msg.reply_text(text)
 
 
@@ -351,16 +379,16 @@ async def on_deluser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     uid = _user_id_arg(context)
     if uid is None:
-        await msg.reply_text("شناسه‌ی عددی کاربر را بنویسید. مثال: /deluser 123456789")
+        await msg.reply_text(t("deluser_usage"))
         return
     if await asyncio.to_thread(db.remove_user, uid):
-        text = f"🗑 کاربر {uid} حذف شد."
+        text = t("user_removed", uid=uid)
+        if uid in config.ALLOWED_IDS:
+            text += t("user_still_env")
     elif uid in config.ALLOWED_IDS:
-        text = f"کاربر {uid} در فایل .env (ALLOWED_USER_IDS) است؛ برای حذف، آنجا را ویرایش کنید."
+        text = t("user_in_env", uid=uid)
     else:
-        text = f"کاربر {uid} در فهرست نبود."
-    if uid in config.ALLOWED_IDS and text.startswith("🗑"):
-        text += "\n⚠️ هنوز در .env هم هست و دسترسی دارد."
+        text = t("user_missing", uid=uid)
     await msg.reply_text(text)
 
 
@@ -376,12 +404,10 @@ def users_panel() -> tuple[str, InlineKeyboardMarkup | None]:
     added = db.users_named()
     ids = {u for u, _ in added}
     lines = [f"• {u} {name}".rstrip() for u, name in added]
-    lines += [f"• {u} (از .env)" for u in sorted(config.ALLOWED_IDS) if u not in ids]
+    lines += [f"• {u} {t('from_env')}" for u in sorted(config.ALLOWED_IDS) if u not in ids]
     admins = ", ".join(map(str, sorted(config.ADMIN_IDS))) or "—"
-    text = ("👥 کاربران مجاز:\n" + "\n".join(lines)) if lines else \
-        "👥 هنوز کاربری اضافه نشده؛ فقط ادمین‌ها می‌توانند جستجو کنند."
-    text += ("\n\nبرای حذف، دکمه‌ی ❌ را بزنید. برای افزودن، کاربر در ربات /start را بزند و «درخواست دسترسی» را انتخاب کند،"
-             f" یا بنویسید /adduser شناسه\n\nادمین‌ها: {admins}")
+    text = (t("users_title") + "\n" + "\n".join(lines)) if lines else t("users_empty")
+    text += t("users_footer", admins=admins)
     buttons = [[InlineKeyboardButton(f"❌ {name or u}"[:40], callback_data=f"rm:{u}")] for u, name in added]
     return text[:4000], InlineKeyboardMarkup(buttons) if buttons else None
 
@@ -389,10 +415,10 @@ def users_panel() -> tuple[str, InlineKeyboardMarkup | None]:
 async def on_remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cq = update.callback_query
     if not is_admin(cq.from_user.id):
-        await cq.answer("⛔️ فقط ادمین.", show_alert=True)
+        await cq.answer(t("admins_only"), show_alert=True)
         return
     removed = await asyncio.to_thread(db.remove_user, int(cq.data.split(":")[1]))
-    await cq.answer("🗑 حذف شد." if removed else "قبلاً حذف شده بود.")
+    await cq.answer(t("removed_ok") if removed else t("removed_already"))
     text, markup = await asyncio.to_thread(users_panel)
     await cq.edit_message_text(text, reply_markup=markup)
 
@@ -406,25 +432,25 @@ async def on_audit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     limit = min(next((n for n in nums if n <= 1000), 20), 50)
     rows = await asyncio.to_thread(db.audit, limit, uid)
     if not rows:
-        await update.effective_message.reply_text("هنوز جستجویی ثبت نشده است.")
+        await update.effective_message.reply_text(t("audit_empty"))
         return
     lines = [f"{time.strftime('%m-%d %H:%M', time.localtime(ts))} | {user_id} {html.escape(name or '')}"
              f" | «{html.escape(query)}» → {total}" for ts, user_id, name, query, total in rows]
     await update.effective_message.reply_text(
-        "📋 آخرین جستجوها:\n" + "\n".join(lines)[:3900], parse_mode=ParseMode.HTML)
+        t("audit_title") + "\n" + "\n".join(lines)[:3900], parse_mode=ParseMode.HTML)
 
 
 async def on_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if not is_admin(update.effective_user.id):
         return
-    status = await msg.reply_text("⏳ در حال بررسی پوشه...")
+    status = await msg.reply_text(t("reload_checking"))
     r = await run_scan(context.application)
-    text = f"✅ بررسی شد: {r['added']} مورد جدید، {r['removed']} مورد حذف‌شده."
+    text = t("reload_done", added=r["added"], removed=r["removed"])
     if r["pending"]:
-        text += f"\n⏳ {r['pending']} فایل در حال کپی است و کمی بعد ثبت می‌شود."
+        text += t("reload_pending", n=r["pending"])
     if r["errors"]:
-        text += f"\n❌ {r['errors']} فایل قابل خواندن نبود (جزئیات در لاگ)."
+        text += t("reload_errors", n=r["errors"])
     await status.edit_text(text)
 
 
@@ -433,16 +459,16 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     doc = msg.document
     if not is_admin(update.effective_user.id):
-        await msg.reply_text("⛔️ فقط ادمین می‌تواند فایل اضافه کند.")
+        await msg.reply_text(t("upload_admin_only"))
         return
     name = os.path.basename(doc.file_name or "")
     if not name.lower().endswith(CSV_EXT + DB_EXT):
-        await msg.reply_text("فقط فایل‌های CSV و DB پشتیبانی می‌شوند.")
+        await msg.reply_text(t("upload_type"))
         return
     if doc.file_size and doc.file_size > MAX_UPLOAD:
-        await msg.reply_text("⚠️ فایل بزرگ‌تر از ۲۰ مگابایت است؛ آن را مستقیم در پوشه‌ی data کپی کنید.")
+        await msg.reply_text(t("upload_big"))
         return
-    status = await msg.reply_text("⏳ در حال دریافت...")
+    status = await msg.reply_text(t("receiving"))
     target_dir = os.path.join(config.DATA_DIR, "uploads")
     os.makedirs(target_dir, exist_ok=True)
     path = os.path.join(target_dir, name)
@@ -451,10 +477,9 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os.replace(path + ".part", path)
     past = time.time() - 120  # the file is complete; skip the "still copying" wait
     os.utime(path, (past, past))
-    await status.edit_text("⏳ در حال ثبت...")
+    await status.edit_text(t("indexing"))
     r = await run_scan(context.application)
-    await status.edit_text(f"✅ ذخیره و ثبت شد ({r['added']} مورد)." if not r["errors"]
-                           else "❌ فایل ذخیره شد ولی قابل خواندن نبود.")
+    await status.edit_text(t("saved", n=r["added"]) if not r["errors"] else t("unreadable"))
 
 
 def build_app() -> Application:
@@ -475,8 +500,10 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("deluser", on_deluser, filters=private))
     app.add_handler(CommandHandler("users", on_users, filters=private))
     app.add_handler(CommandHandler("audit", on_audit, filters=private))
+    app.add_handler(CommandHandler("language", on_language, filters=private))
     app.add_handler(MessageHandler(private & filters.Document.ALL, on_document))
     app.add_handler(MessageHandler(private & filters.TEXT & ~filters.COMMAND, on_search))
+    app.add_handler(CallbackQueryHandler(on_language_chosen, pattern=r"^lang:[a-z]{2}$"))
     app.add_handler(CallbackQueryHandler(on_access_request, pattern=r"^acc:req$"))
     app.add_handler(CallbackQueryHandler(on_access_decision, pattern=r"^acc(ok|no):\d+$"))
     app.add_handler(CallbackQueryHandler(on_remove_user, pattern=r"^rm:\d+$"))
