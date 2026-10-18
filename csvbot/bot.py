@@ -37,7 +37,10 @@ def is_admin(user_id: int) -> bool:
 
 
 def can_search(user_id: int) -> bool:
-    return not config.ALLOWED_IDS or user_id in config.ALLOWED_IDS or is_admin(user_id)
+    """Open to everyone until at least one allowed user exists (.env or /adduser)."""
+    added = db.users()
+    return (not config.ALLOWED_IDS and not added) or user_id in config.ALLOWED_IDS \
+        or user_id in added or is_admin(user_id)
 
 
 async def notify_admins(bot, text: str):
@@ -195,6 +198,7 @@ async def on_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_admin(update.effective_user.id):
         text += ("\n\nادمین: فایل‌های CSV و DB را در پوشه‌ی data بگذارید تا خودکار ثبت شوند،"
                  " یا فایل‌های زیر ۲۰ مگابایت را همین‌جا بفرستید.\n/reload — بررسی فوری پوشه\n"
+                 "/adduser ID — افزودن کاربر، /deluser ID — حذف کاربر، /users — فهرست کاربران\n"
                  "زیر هر نتیجه‌ی جستجو دکمه‌ی 🗑 هست تا همان ردیف را از ایندکس حذف کنید.")
     await update.effective_message.reply_text(text)
 
@@ -209,6 +213,61 @@ async def on_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [f"• {name} — {count:,} ردیف" for _, name, count in files]
     text = "📚 فایل‌های ثبت‌شده:\n" + "\n".join(lines)
     await update.effective_message.reply_text(text[:4000])
+
+
+def _user_id_arg(context) -> int | None:
+    arg = context.args[0] if context.args else ""
+    return int(arg) if arg.isdigit() else None
+
+
+async def on_adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if not is_admin(update.effective_user.id):
+        return
+    uid = _user_id_arg(context)
+    if uid is None:
+        await msg.reply_text("شناسه‌ی عددی کاربر را بنویسید. مثال: /adduser 123456789\n"
+                             "(کاربر می‌تواند شناسه‌اش را از @userinfobot بگیرد.)")
+        return
+    if await asyncio.to_thread(db.add_user, uid):
+        text = f"✅ کاربر {uid} اضافه شد."
+        if not config.ALLOWED_IDS and len(db.users()) == 1:
+            text += "\nاز این پس فقط کاربران اضافه‌شده و ادمین‌ها می‌توانند جستجو کنند."
+    else:
+        text = f"کاربر {uid} از قبل در فهرست است."
+    await msg.reply_text(text)
+
+
+async def on_deluser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if not is_admin(update.effective_user.id):
+        return
+    uid = _user_id_arg(context)
+    if uid is None:
+        await msg.reply_text("شناسه‌ی عددی کاربر را بنویسید. مثال: /deluser 123456789")
+        return
+    if await asyncio.to_thread(db.remove_user, uid):
+        text = f"🗑 کاربر {uid} حذف شد."
+    elif uid in config.ALLOWED_IDS:
+        text = f"کاربر {uid} در فایل .env (ALLOWED_USER_IDS) است؛ برای حذف، آنجا را ویرایش کنید."
+    else:
+        text = f"کاربر {uid} در فهرست نبود."
+    if uid in config.ALLOWED_IDS and text.startswith("🗑"):
+        text += "\n⚠️ هنوز در .env هم هست و دسترسی دارد."
+    await msg.reply_text(text)
+
+
+async def on_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    added = await asyncio.to_thread(db.users)
+    lines = [f"• {u}" for u in added] + [f"• {u} (از .env)" for u in config.ALLOWED_IDS if u not in added]
+    admins = ", ".join(map(str, config.ADMIN_IDS)) or "—"
+    if lines:
+        text = "👥 کاربران مجاز:\n" + "\n".join(lines)
+    else:
+        text = "👥 فهرست کاربران خالی است؛ همه می‌توانند جستجو کنند."
+    await update.effective_message.reply_text(f"{text}\n\nادمین‌ها: {admins}"[:4000])
 
 
 async def on_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -268,6 +327,9 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("search", on_search, filters=private))
     app.add_handler(CommandHandler("files", on_files, filters=private))
     app.add_handler(CommandHandler("reload", on_reload, filters=private))
+    app.add_handler(CommandHandler("adduser", on_adduser, filters=private))
+    app.add_handler(CommandHandler("deluser", on_deluser, filters=private))
+    app.add_handler(CommandHandler("users", on_users, filters=private))
     app.add_handler(MessageHandler(private & filters.Document.ALL, on_document))
     app.add_handler(MessageHandler(private & filters.TEXT & ~filters.COMMAND, on_search))
     app.add_handler(CallbackQueryHandler(on_page, pattern=r"^page:\d+$"))

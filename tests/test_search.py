@@ -37,6 +37,14 @@ class SearchTest(unittest.TestCase):
         self.assertEqual(self.db.search("مریم تهران")[0], 0)  # all words required
         self.assertEqual(self.db.search('"مریم کاظمی"')[1][0][1], 2)
 
+    def test_users(self):
+        self.assertTrue(self.db.add_user(5))
+        self.assertFalse(self.db.add_user(5))
+        self.assertEqual(self.db.users(), [5])
+        self.assertTrue(self.db.remove_user(5))
+        self.assertFalse(self.db.remove_user(5))
+        self.assertEqual(self.db.users(), [])
+
     def test_delete_row(self):
         self.add("d", "d.csv", b"a,b\nfoo,1\nfoo,2\nbar,3\n")
         _, res = self.db.search("foo", with_ids=True)

@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS files (
     done INTEGER NOT NULL DEFAULT 0,
     added_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, added_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS purged (
     file_id INTEGER, row_id INTEGER, PRIMARY KEY (file_id, row_id)
 ) WITHOUT ROWID;
@@ -176,6 +177,19 @@ class Database:
             con.execute("DELETE FROM files WHERE id = ?", (file_id,))
             con.execute("DELETE FROM purged WHERE file_id = ?", (file_id,))
             return True
+
+    def add_user(self, user_id: int) -> bool:
+        with closing(self._connect()) as con, con:
+            return con.execute("INSERT OR IGNORE INTO users VALUES (?, ?)",
+                               (user_id, int(time.time()))).rowcount > 0
+
+    def remove_user(self, user_id: int) -> bool:
+        with closing(self._connect()) as con, con:
+            return con.execute("DELETE FROM users WHERE user_id = ?", (user_id,)).rowcount > 0
+
+    def users(self) -> list[int]:
+        with closing(self._connect()) as con:
+            return [r[0] for r in con.execute("SELECT user_id FROM users ORDER BY added_at")]
 
     def locate(self, row_id: int):
         """Where an indexed row lives in its source file: (file_id, unique_id,
