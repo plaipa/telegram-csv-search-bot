@@ -1,0 +1,10 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env          # BOT_TOKEN, ADMIN_IDS, ...
+    volumes:
+      - ./data:/app/data    # your CSV / DB files
+      - bot-state:/app/state  # search index and users
+volumes:
+  bot-state:
